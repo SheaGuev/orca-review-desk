@@ -1,0 +1,180 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "id": "pr-tour",
+  "name": "PR Tour",
+  "version": "0.2.0",
+  "description": "A review queue of the PRs waiting for you, in the order to review them, each with an agent-written guide: risk, findings with suggested comments, what changed in reading order, a note on every file, a claims check, and a review you post to GitHub from the guide.",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.259"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "reviews",
+        "title": "Reviews",
+        "icon": "gauge",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "customEditors": [
+      {
+        "id": "guide",
+        "title": "Review guide",
+        "extensions": [
+          ".prtour.json",
+          ".prguide.json"
+        ],
+        "entry": "editor/main.ts",
+        "priority": "default",
+        "frame": "isolated"
+      }
+    ],
+    "commands": [
+      {
+        "id": "refresh",
+        "title": "PR Tour: Check for review requests"
+      },
+      {
+        "id": "openCurrent",
+        "title": "PR Tour: Open guide for this branch",
+        "when": "workspace"
+      },
+      {
+        "id": "generateCurrent",
+        "title": "PR Tour: Generate guide for this branch",
+        "when": "workspace"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "guide",
+        "text": "PR tour",
+        "icon": "gauge",
+        "tooltip": "PR Tour",
+        "command": "openCurrent"
+      }
+    ],
+    "events": [
+      {
+        "on": "workspace.changed"
+      }
+    ],
+    "settings": [
+      {
+        "key": "harness",
+        "title": "Agent harness",
+        "description": "The agent CLI that writes guides. It runs in the background with read-only tools, on the account it is signed in with.",
+        "type": "string",
+        "default": "claude",
+        "enum": [
+          "claude",
+          "codex"
+        ],
+        "enumLabels": [
+          "Claude Code",
+          "Codex"
+        ]
+      },
+      {
+        "key": "model",
+        "title": "Model",
+        "description": "Passed to the agent as its model flag. Leave empty for the agent's default.",
+        "type": "string",
+        "default": "claude-opus-5-5",
+        "maxLength": 100,
+        "placeholder": "Agent default"
+      },
+      {
+        "key": "autoRequested",
+        "title": "Make guides when my review is requested",
+        "description": "In repositories you turned on. Updated after each push by the author.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "teams",
+        "title": "Teams",
+        "description": "GitHub teams whose review requests appear in Your teams, comma separated (org/team).",
+        "type": "string",
+        "default": "",
+        "maxLength": 1000,
+        "placeholder": "acme/payments, acme/identity"
+      },
+      {
+        "key": "autoTeams",
+        "title": "Make guides for team requests that pass the filter",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "teamRequireOwnership",
+        "title": "Team filter: changes files my team owns (CODEOWNERS)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "teamMinLines",
+        "title": "Team filter: at least this many lines changed",
+        "type": "integer",
+        "default": 200,
+        "minimum": 0,
+        "maximum": 100000
+      },
+      {
+        "key": "includeAuthored",
+        "title": "Also list my own open PRs",
+        "description": "Shows Your PRs, so you can see the guide reviewers will get.",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "key": "skipDrafts",
+        "title": "Skip draft PRs",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "dailyLimit",
+        "title": "Daily limit",
+        "description": "Automatic runs per day across all repositories. Generate by hand always works.",
+        "type": "integer",
+        "default": 20,
+        "minimum": 0,
+        "maximum": 500
+      },
+      {
+        "key": "extraInstructions",
+        "title": "Extra instructions",
+        "description": "Added to the agent's prompt after the built-in instructions.",
+        "type": "string",
+        "default": "",
+        "maxLength": 2000,
+        "multiline": true,
+        "placeholder": "e.g. Call out any change to money movement or KYC."
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "notifications:show"
+    }
+  ]
+}

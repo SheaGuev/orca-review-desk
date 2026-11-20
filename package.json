@@ -1,0 +1,15 @@
+{
+  "name": "pr-tour",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "test": "orca plugin test .",
+    "check": "orca plugin check .",
+    "validate": "orca plugin validate ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
