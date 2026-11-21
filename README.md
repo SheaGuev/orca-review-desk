@@ -54,7 +54,7 @@ Until you say yes, each PR gets a **Generate** button instead.
 Press a queue row to open its guide in an editor tab. It starts on the overview (risk, findings,
 the changes by kind), then walks through the PR one stop at a time.
 
-![A tour stop: the explanation above the diff it covers](assets/guide-stop.png)
+![A tour stop: the stop list, the explanation above the diff, and a finding with its suggested comment under its line](assets/guide-stop.png)
 
 - **Deep stops** explain one idea with only the hunks that show it.
 - **Skim stops** show one example of a routine change and list the other files.
@@ -74,7 +74,7 @@ The draft is saved per PR, so closing the tab loses nothing.
 **Finish review →** shows the blocker and major findings you haven't handled yet, then your comments and a
 summary. Choose **Comment**, **Request changes** or **Approve**, then press **Post to GitHub**.
 
-![Finish review: open findings to add or dismiss, then the pending comments and summary](assets/guide-finish.png)
+![Finish review: a finding to add or dismiss, the pending comments, the summary and Post to GitHub](assets/guide-finish.png)
 
 If the PR moved since the guide was written, every line comment is checked against the new diff
 first. Anything that no longer fits is shown for fixing, and nothing is posted.
