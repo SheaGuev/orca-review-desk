@@ -4,7 +4,7 @@ An [Orca](https://github.com/stablyai/orca) plugin that lists the PRs waiting fo
 the order to review them, and has your own agent CLI write a guide for each one. You can then
 review from the guide and post the review to GitHub without leaving Orca.
 
-![A PR Tour guide: risk, findings, the changes by area and the tour](assets/guide-overview.png)
+![PR Tour: understand the PR, then tour the diff. A guide's what, why and impact above a tour stop](assets/cover.png)
 
 Each guide has:
 
@@ -13,6 +13,8 @@ Each guide has:
 - what the PR does, why, and its impact
 - a tour of every changed file, in reading order
 - what changed since your last review
+
+![A PR Tour guide: risk, findings, the changes by area and the tour](assets/guide-overview.png)
 
 Everything runs on your machine with your own `gh` and agent sign-ins. Nothing reaches GitHub
 until you press **Post to GitHub**.
