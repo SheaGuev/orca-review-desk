@@ -28,6 +28,12 @@
       "alt": "Finish review step with an open finding to add or dismiss and two pending comments",
       "caption": "Finish review: settle findings, then post one GitHub review",
       "theme": "dark"
+    },
+    {
+      "path": "assets/settings.png",
+      "alt": "PR Tour settings: agent harness, model, auto-generate toggles, teams, team filter, daily limit and extra instructions",
+      "caption": "Settings: pick the agent and model, teams and limits",
+      "theme": "dark"
     }
   ],
   "engines": {

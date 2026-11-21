@@ -24,6 +24,8 @@ posted to GitHub except by pressing **Post to GitHub** in a guide, and no CI is 
 | Command palette | `PR Tour: Check for review requests`, `Open guide for this branch`, `Generate guide for this branch` |
 | Settings → Plugins → PR Tour | Agent harness, model, teams, team filter, daily limit, extra instructions |
 
+![PR Tour settings: agent harness, model, teams, team filter, daily limit and extra instructions](assets/settings.png)
+
 ## How guides get made
 
 1. Every 5 minutes (and when you press refresh) the worker asks GitHub, through `gh`, for open PRs
