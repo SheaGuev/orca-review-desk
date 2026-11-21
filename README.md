@@ -4,7 +4,7 @@ An [Orca](https://github.com/stablyai/orca) plugin that lists the PRs waiting fo
 the order to review them, and has your own agent CLI write a guide for each one. You can then
 review from the guide and post the review to GitHub without leaving Orca.
 
-![A PR Tour guide: risk, findings, the changes by area and the tour](assets/cover.png)
+![A PR Tour guide: risk, findings, the changes by area and the tour](assets/guide-overview.png)
 
 Each guide has:
 

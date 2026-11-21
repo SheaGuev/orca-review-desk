@@ -3,37 +3,35 @@
   "manifestVersion": 2,
   "id": "pr-tour",
   "name": "PR Tour",
-  "version": "0.2.1",
-  "description": "A review queue of the PRs waiting for you, in the order to review them, each with an agent-written guide: risk, findings with suggested comments, what changed in reading order, a note on every file, a claims check, and a review you post to GitHub from the guide.",
+  "version": "0.2.2",
+  "description": "Understand a PR, then tour its diff in the order that explains it. For each PR waiting on you, your agent writes a guide: what, why and the impact, risk and findings, a stop-by-stop tour, and a review you post to GitHub.",
+  "repository": "https://github.com/adamthewilliam/orca-pr-tour",
+  "icon": "assets/icon.png",
   "license": "MIT",
   "cover": {
     "path": "assets/cover.png",
-    "alt": "A PR Tour guide for a dashboard restyle PR: risk, findings, the changes by area and the 13-stop tour"
+    "alt": "A guide's what, why and impact above tour stop 12 of 13: the stop list, the one idea this stop explains, and the diff hunk that shows it"
   },
   "screenshots": [
     {
       "path": "assets/guide-overview.png",
       "alt": "Guide overview: what, why and impact, a medium risk callout, findings by severity, the changes by area and the 13-stop tour grid",
-      "caption": "Overview: risk, findings, the changes and the tour",
-      "theme": "dark"
+      "caption": "Overview: risk, findings, the changes and the tour"
     },
     {
       "path": "assets/guide-stop.png",
       "alt": "Stop 12 of 13: the stop list on the left, the explanation above the AutomationSection.tsx diff, and a major finding with its suggested comment under line 109",
-      "caption": "A tour stop: one idea, the hunks that show it, and findings in place",
-      "theme": "dark"
+      "caption": "A tour stop: one idea, the hunks that show it, and findings in place"
     },
     {
       "path": "assets/guide-finish.png",
       "alt": "Finish review: a major finding to add or dismiss, two pending comments, the summary, where the review goes, and Post to GitHub",
-      "caption": "Finish review: settle findings, then post one GitHub review",
-      "theme": "dark"
+      "caption": "Finish review: settle findings, then post one GitHub review"
     },
     {
       "path": "assets/settings.png",
       "alt": "PR Tour settings: agent harness, model, auto-generate toggles, teams, team filter, daily limit and extra instructions",
-      "caption": "Settings: pick the agent and model, teams and limits",
-      "theme": "dark"
+      "caption": "Settings: pick the agent and model, teams and limits"
     }
   ],
   "engines": {

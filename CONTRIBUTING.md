@@ -151,6 +151,9 @@ Things to know before tagging:
   command or event subscription, or a higher execution profile, makes every user approve again.
 - Set `engines.orca` to the newest Orca release whose features you use. The directory checks the
   plugin against the latest Orca release and holds the listing if it fails.
-- Listing images in `assets/` (`cover`, `screenshots` in the manifest) must be PNG, JPEG or WebP.
+- Listing images in `assets/` (`icon`, `cover`, `screenshots` in the manifest) must be static PNG,
+  JPEG or WebP (the icon PNG or WebP). The icon is square, at least 128×128 and at most 256 KB,
+  rendered from `assets/icon.svg` with `rsvg-convert -w 512 -h 512 assets/icon.svg -o assets/icon.png`.
   The cover is at least 800×500 and at most 1 MB, each screenshot at least 1280×800 and at most
-  1.5 MB, with at most 6 screenshots.
+  1.5 MB, with at most 6 screenshots. Leave out a screenshot's `theme`: it hides the screenshot
+  from everyone using the other Orca theme.
