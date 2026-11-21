@@ -67,12 +67,12 @@ test("files are grouped in Diff Breakdown's order with git's status letters", ()
 });
 
 test("a rename keeps its old path; a binary file counts no lines", () => {
-  const files = b.categories[0].files;
-  assert.equal(files.find((f) => f.path === "src/new-name.ts")?.oldPath, "src/old-name.ts");
-  assert.equal(files.find((f) => f.path === "src/app.ts")?.oldPath, undefined);
-  const logo = files.find((f) => f.path === "public/logo.png");
+  const files = b.categories[0]?.files;
+  assert.equal(files?.find((f) => f.path === "src/new-name.ts")?.oldPath, "src/old-name.ts");
+  assert.equal(files?.find((f) => f.path === "src/app.ts")?.oldPath, undefined);
+  const logo = files?.find((f) => f.path === "public/logo.png");
   assert.deepEqual([logo?.additions, logo?.deletions, logo?.binary], [0, 0, true]);
-  assert.ok(!("binary" in (files.find((f) => f.path === "src/app.ts") ?? {})));
+  assert.ok(!("binary" in (files?.find((f) => f.path === "src/app.ts") ?? {})));
 });
 
 test("Generated is listed but not counted in the totals", () => {
@@ -111,8 +111,8 @@ test("a category lists at most the cap, and still counts every file", () => {
   });
   const [runtime] = capped.categories;
   assert.deepEqual(
-    [runtime.files.length, runtime.omitted, runtime.additions, capped.fileCount],
+    [runtime?.files.length, runtime?.omitted, runtime?.additions, capped.fileCount],
     [2, 3, 5, 5],
   );
-  assert.equal(runtime.files[0].status, "M", "no name-status row reads as modified");
+  assert.equal(runtime?.files[0]?.status, "M", "no name-status row reads as modified");
 });

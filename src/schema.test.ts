@@ -1,6 +1,6 @@
 import { assert, test } from "orca/testing";
 import { commentableLines } from "./diff";
-import { AGENT_GUIDE, DIFF } from "./fixtures";
+import { AGENT_GUIDE, DIFF, nth } from "./fixtures";
 import { buildPrompt } from "./prompt";
 import {
   checkAgentGuide,
@@ -50,7 +50,9 @@ test("word limits apply to headlines only", () => {
   const long = Array.from({ length: 21 }, (_, i) => `w${i}`).join(" ");
   const guide = {
     ...AGENT_GUIDE,
-    findings: [{ ...AGENT_GUIDE.findings[0], headline: long, detail: `${long} ${long} ${long}` }],
+    findings: [
+      { ...nth(AGENT_GUIDE.findings, 0), headline: long, detail: `${long} ${long} ${long}` },
+    ],
     files: AGENT_GUIDE.files.map((f) => ({ ...f, note: `${long} ${long}` })),
   };
   assert.deepEqual(checkAgentGuide(guide), [
@@ -105,11 +107,11 @@ test("references must exist in the diff, and every file needs a note", () => {
   const guide = {
     ...AGENT_GUIDE,
     findings: [
-      { ...AGENT_GUIDE.findings[0], line: 12 },
-      { ...AGENT_GUIDE.findings[0], id: "f2", line: 99 },
-      { ...AGENT_GUIDE.findings[1], id: "f3", file: "src/Nope.ts" },
+      { ...nth(AGENT_GUIDE.findings, 0), line: 12 },
+      { ...nth(AGENT_GUIDE.findings, 0), id: "f2", line: 99 },
+      { ...nth(AGENT_GUIDE.findings, 1), id: "f3", file: "src/Nope.ts" },
     ],
-    readingOrder: [{ ...AGENT_GUIDE.readingOrder[0], areaId: "nope" }],
+    readingOrder: [{ ...nth(AGENT_GUIDE.readingOrder, 0), areaId: "nope" }],
     files: AGENT_GUIDE.files.slice(1),
   };
   assert.deepEqual(checkAgentGuide(guide, CTX), [
@@ -123,18 +125,19 @@ test("references must exist in the diff, and every file needs a note", () => {
 test("settle turns stray lines into file comments and fills missing notes", () => {
   const guide = {
     ...AGENT_GUIDE,
-    findings: [{ ...AGENT_GUIDE.findings[0], line: 99 }],
-    files: [...AGENT_GUIDE.files.slice(1), AGENT_GUIDE.files[1]],
+    findings: [{ ...nth(AGENT_GUIDE.findings, 0), line: 99 }],
+    files: [...AGENT_GUIDE.files.slice(1), nth(AGENT_GUIDE.files, 1)],
   };
   const { guide: settled, fixed } = settle(guide, CTX);
-  assert.equal(settled.findings[0].line, null);
+  assert.equal(settled.findings[0]?.line, null);
   assert.deepEqual(settled.files.map((f) => f.path).sort(), [...CTX.changed].sort());
   assert.equal(fixed.length, 2);
   assert.deepEqual(checkAgentGuide(settled, CTX), []);
 });
 
 test("the agent must give each stop focus ranges inside the diff and a check", () => {
-  const [first, second] = AGENT_GUIDE.readingOrder;
+  const first = nth(AGENT_GUIDE.readingOrder, 0);
+  const second = nth(AGENT_GUIDE.readingOrder, 1);
   const { focus: _f, check: _c, ...bare } = second;
   const guide = {
     ...AGENT_GUIDE,
@@ -174,7 +177,8 @@ test("the agent must give each stop focus ranges inside the diff and a check", (
 });
 
 test("after the repair round, bad focus ranges are dropped and the stop shows its whole file", () => {
-  const [first, second] = AGENT_GUIDE.readingOrder;
+  const first = nth(AGENT_GUIDE.readingOrder, 0);
+  const second = nth(AGENT_GUIDE.readingOrder, 1);
   const { check: _c, ...noCheck } = second;
   const guide = {
     ...AGENT_GUIDE,
@@ -186,9 +190,9 @@ test("after the repair round, bad focus ranges are dropped and the stop shows it
   // Shape problems in focus do not fail the run once the tour fields are optional.
   assert.deepEqual(checkAgentGuide(guide, undefined, { words: false, tour: false }), []);
   const { guide: settled, fixed } = settle(guide, CTX);
-  assert.deepEqual(settled.readingOrder[0].focus, [{ start: 11, end: 12 }]);
-  assert.equal(settled.readingOrder[1].focus, undefined, "no range left: whole file");
-  assert.equal(settled.readingOrder[1].check, undefined);
+  assert.deepEqual(settled.readingOrder[0]?.focus, [{ start: 11, end: 12 }]);
+  assert.equal(settled.readingOrder[1]?.focus, undefined, "no range left: whole file");
+  assert.equal(settled.readingOrder[1]?.check, undefined);
   assert.deepEqual(fixed, [
     "readingOrder[0] src/SessionDataAccess.ts: kept 1 of 3 focus ranges",
     "readingOrder[1] src/CustomerService.ts: kept 0 of 1 focus ranges, shows the whole file",
@@ -250,7 +254,7 @@ test("a whole guide needs the worker-filled fields", () => {
   };
   assert.deepEqual(checkGuide(before), []);
   assert.deepEqual(
-    checkGuide({ ...guide, readingOrder: [{ ...AGENT_GUIDE.readingOrder[0], focus: "all" }] }),
+    checkGuide({ ...guide, readingOrder: [{ ...nth(AGENT_GUIDE.readingOrder, 0), focus: "all" }] }),
     ["readingOrder[0].focus: expected a list of { start, end } line ranges"],
   );
   const trimmed = withoutDetail(guide as PrGuide);
@@ -279,7 +283,7 @@ test("the editor still opens a v1 guide, drawn in the v2 shape", () => {
   assert.deepEqual(checkGuide(v1), []);
   const up = upgradeV1(v1);
   assert.equal(up.risk.headline, "Fine.");
-  assert.equal(up.readingOrder[0].areaId, "rt");
+  assert.equal(up.readingOrder[0]?.areaId, "rt");
   assert.deepEqual(up.risk.beforeMerge, [{ headline: "Tell ops" }]);
   assert.equal(riskHeadline(v1), "Fine.");
   assert.deepEqual(checkGuide(up), []);
@@ -419,11 +423,11 @@ test("a stored v2 guide with single-file stops still loads, as deep stops", () =
   assert.deepEqual(
     upgraded.readingOrder.map((r) => [r.depth, r.files, r.why, r.headline]),
     [
-      ["deep", ["src/SessionDataAccess.ts"], "core", AGENT_GUIDE.readingOrder[0].headline],
-      ["deep", ["src/CustomerService.ts"], "core", AGENT_GUIDE.readingOrder[1].headline],
+      ["deep", ["src/SessionDataAccess.ts"], "core", AGENT_GUIDE.readingOrder[0]?.headline],
+      ["deep", ["src/CustomerService.ts"], "core", AGENT_GUIDE.readingOrder[1]?.headline],
     ],
   );
-  assert.equal(upgraded.readingOrder[0].focus?.[0].start, 11, "focus and check are kept");
+  assert.equal(upgraded.readingOrder[0]?.focus?.[0]?.start, 11, "focus and check are kept");
   assert.equal(upgradeGuide(STORED), STORED, "a current guide comes back as it is");
   // The agent may not use the old shape.
   assert.ok(
@@ -434,14 +438,14 @@ test("a stored v2 guide with single-file stops still loads, as deep stops", () =
 });
 
 test("the agent's stops need a depth, a why tag and files; a skim stop needs no check", () => {
-  const skim: Stop = { ...AGENT_GUIDE.readingOrder[2] };
+  const skim: Stop = { ...nth(AGENT_GUIDE.readingOrder, 2) };
   assert.equal(skim.check, undefined);
   assert.deepEqual(checkAgentGuide(AGENT_GUIDE, CTX), []);
   const bad = {
     ...AGENT_GUIDE,
     readingOrder: [
-      { ...AGENT_GUIDE.readingOrder[0], depth: "medium", why: "because", files: [] },
-      { ...AGENT_GUIDE.readingOrder[1], check: undefined },
+      { ...nth(AGENT_GUIDE.readingOrder, 0), depth: "medium", why: "because", files: [] },
+      { ...nth(AGENT_GUIDE.readingOrder, 1), check: undefined },
     ],
   };
   assert.deepEqual(checkAgentGuide(bad), [
@@ -451,11 +455,11 @@ test("the agent's stops need a depth, a why tag and files; a skim stop needs no 
     "readingOrder[1].check: expected a string",
   ]);
   // After the repair round a missing depth or tag is filled in, not fatal.
-  const { depth: _d, why: _w, ...loose } = AGENT_GUIDE.readingOrder[1];
+  const { depth: _d, why: _w, ...loose } = nth(AGENT_GUIDE.readingOrder, 1);
   const relaxed = { ...AGENT_GUIDE, readingOrder: [loose] };
   assert.deepEqual(checkAgentGuide(relaxed, undefined, { words: false, tour: false }), []);
   const settled = settle(relaxed as unknown as AgentGuide, CTX).guide.readingOrder[0];
-  assert.deepEqual([settled.depth, settled.why], ["deep", "core"]);
+  assert.deepEqual([settled?.depth, settled?.why], ["deep", "core"]);
 });
 
 test("the first round checks coverage: each file in one stop, none skipped, risky and severe ones deep", () => {
@@ -463,7 +467,9 @@ test("the first round checks coverage: each file in one stop, none skipped, risk
     skipped: new Map([["README.md", "whitespace" as const]]),
     risky: new Map([["src/CustomerService.ts", "config file"]]),
   };
-  const [first, second, skim] = AGENT_GUIDE.readingOrder;
+  const first = nth(AGENT_GUIDE.readingOrder, 0);
+  const second = nth(AGENT_GUIDE.readingOrder, 1);
+  const skim = nth(AGENT_GUIDE.readingOrder, 2);
   const guide = {
     ...AGENT_GUIDE,
     readingOrder: [
@@ -520,11 +526,9 @@ test("the prompt asks for a tour of every file, weighted by importance, with the
       '"why": "finding" | "risky" | "core" | "routine" | "repeated" | "tests" | "docs"',
     ),
   );
-  assert.ok(
-    prompt.includes(
-      "contracts and schema first, then core logic, its callers, UI, then tests and docs",
-    ),
-  );
+  assert.ok(prompt.includes("stop 1 is the core change the title describes"));
+  assert.ok(prompt.includes("only support the change are skim stops near the end"));
+  assert.ok(prompt.includes("two stops must never share one"));
   const none = buildPrompt({
     repo: "acme/api",
     pr: PRD,
@@ -538,4 +542,16 @@ test("the prompt asks for a tour of every file, weighted by importance, with the
     risky: new Map(),
   });
   assert.ok(none.includes("<must_be_deep>\n(none)\n</must_be_deep>"));
+});
+
+test("a stop's title is optional, and short when given", () => {
+  const titled = (title: string) => ({
+    ...AGENT_GUIDE,
+    readingOrder: AGENT_GUIDE.readingOrder.map((s, i) => (i === 0 ? { ...s, title } : s)),
+  });
+  assert.deepEqual(checkAgentGuide(titled("Atomic invalidation")), []);
+  assert.deepEqual(checkAgentGuide(titled("one two three four five six")), [
+    "readingOrder[0].title: 6 words, the limit is 5; a few words naming the idea, the sentence goes in headline",
+  ]);
+  assert.deepEqual(checkAgentGuide(AGENT_GUIDE), [], "a stop with no title still passes");
 });

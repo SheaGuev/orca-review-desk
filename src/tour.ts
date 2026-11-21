@@ -4,6 +4,7 @@
 //
 // The tour covers every changed file: the agent's deep and skim stops, then, when any file was
 // skipped by design, one last stop listing those. Stop indices count that last stop too.
+import { isObj } from "./json";
 import type { PrGuide, Stop } from "./schema";
 
 /** The tour's stops as far as progress goes: each stop's files, then the skipped files' stop. */
@@ -41,7 +42,7 @@ export function filesCovered(
 }
 
 /** `overview`, `wrapup`, or `stop:<index>` (from 0). A string, so it stores as plain JSON. */
-export type TourView = string;
+export type TourView = "overview" | "wrapup" | `stop:${number}`;
 
 export type TourState = {
   /** The guide commit the progress belongs to; another commit starts the tour again. */
@@ -98,8 +99,8 @@ function indices(value: unknown, stops: number): number[] {
  * on another commit, start over at the overview. Unknown views and stop indices are dropped.
  */
 export function tourState(value: unknown, commit: string, stops: number): TourState {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return freshTour(commit);
-  const v = value as Record<string, unknown>;
+  if (!isObj(value)) return freshTour(commit);
+  const v = value;
   if (v.commit !== commit) return freshTour(commit);
   const parsed = parseView(v.view, stops);
   return {
@@ -114,6 +115,24 @@ export function tourState(value: unknown, commit: string, stops: number): TourSt
         ? v.last
         : null,
   };
+}
+
+/**
+ * The view one step forward or back from `view`: overview, each stop, wrap-up. Null at either
+ * end. A tour with no stops goes from the overview straight to the wrap-up.
+ */
+export function neighbourView(view: TourView, stops: number, forward: boolean): TourView | null {
+  const v = parseView(view, stops);
+  if (v.kind === "overview") {
+    if (!forward) return null;
+    return stops ? stopView(0) : "wrapup";
+  }
+  if (v.kind === "wrapup") {
+    if (forward) return null;
+    return stops ? stopView(stops - 1) : "overview";
+  }
+  if (forward) return v.index + 1 < stops ? stopView(v.index + 1) : "wrapup";
+  return v.index > 0 ? stopView(v.index - 1) : "overview";
 }
 
 /** The state with stop `index`'s file collapsed or open again. */
@@ -164,7 +183,8 @@ export function tourLabel(value: unknown, commit: string, tour: TourShape): stri
 
 /** Lines in the diff a reviewer reads at a stop: its focus ranges in its first file, or all of them. */
 export function stopLines(stop: Stop, commentable: PrGuide["commentable"]): number {
-  const ranges = commentable[stop.files[0]] ?? [];
+  const first = stop.files[0];
+  const ranges = first === undefined ? [] : (commentable[first] ?? []);
   let n = 0;
   for (const [a, b] of ranges)
     for (let line = a; line <= b; line++)

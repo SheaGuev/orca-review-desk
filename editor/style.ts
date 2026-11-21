@@ -175,10 +175,23 @@ span.bd-where { padding: 0 10px; }
 /* Right padding keeps the actions clear of Orca's own floating button at the tab's bottom right. */
 .review-bar { position: fixed; z-index: 10; left: 0; right: 0; bottom: 0; background: var(--card); color: var(--card-fg); border-top: 1px solid var(--line); padding: 10px 72px 10px 24px; display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; box-shadow: 0 -4px 16px rgb(0 0 0 / .12); }
 .bar-line { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
-.confirm { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+/* Posting: a choice of verdict, what a press will send, and the one button that sends it. */
+.verdict-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }
+.verdict-option { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; cursor: pointer; }
+.verdict-option input { margin: 0; accent-color: var(--accent); }
+.post { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.post p { margin: 0; }
+.post-unread { color: var(--warn); }
+.post-button { display: inline-flex; align-items: center; gap: 8px; }
+/* While the review is on its way: the fields dim and a ring turns in the button. */
+.review-bar [inert] { opacity: .55; }
+.spinner { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.posted-title { color: var(--add); }
 .pending-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.pending { display: flex; flex-direction: column; gap: 4px; }
-.pending.stale { padding: 8px; border: 1px solid var(--danger); border-radius: 6px; }
+.pending-list > .pending { display: flex; flex-direction: column; gap: 4px; }
+.pending-list > .pending.stale { padding: 8px; border: 1px solid var(--danger); border-radius: 6px; }
 .review-status:empty { display: none; }
 .review-status { font-size: 12.5px; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -197,6 +210,7 @@ span.bd-where { padding: 0 10px; }
 .ov-title { flex: 1 1 420px; min-width: 0; }
 .ov-title h1 { max-width: 40ch; }
 .start-actions { flex: none; padding-top: 2px; }
+.restart-confirm .btn.danger { color: var(--danger); border-color: var(--danger); }
 .meta .tag { display: inline-flex; vertical-align: baseline; height: 20px; }
 .ov-top { display: flex; flex-direction: column; gap: 22px; }
 html.w-cols .ov-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 48px; align-items: start; }
@@ -211,7 +225,7 @@ html.w-cols .provenance { text-align: right; }
 .risk-card h2.tag { font-size: 12px; margin: 0; }
 .risk-card .risk-headline { margin: 0; font-weight: 500; }
 .risk-card .section { gap: 6px; }
-.ov-side { display: flex; flex-direction: column; gap: 22px; }
+.ov-side, .ov-main { display: flex; flex-direction: column; gap: 22px; }
 .finding-list { list-style: none; margin: 0; padding: 0; }
 .finding-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
 .finding-row[hidden] { display: none; }
@@ -219,18 +233,36 @@ html.w-cols .provenance { text-align: right; }
 .finding-row > .tag { justify-self: start; margin-top: 1px; }
 .finding-row > .btn { justify-self: end; white-space: nowrap; }
 .finding-list + .btn { align-self: start; }
-.stop-list { list-style: none; margin: 0; padding: 0; }
-html.w-cols .stop-list { columns: 2; column-gap: 40px; }
-.stop-list li { break-inside: avoid; }
-.stop-link { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; width: 100%; padding: 8px 6px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--fg); font: inherit; text-align: left; cursor: pointer; border-radius: 4px; }
-.stop-link:hover { background: var(--hover); color: var(--hover-fg); }
-.stop-num { font: 600 12.5px/22px var(--mono); color: var(--muted); text-align: right; }
-.stop-title { font-weight: 500; }
-.stop-meta { gap: 6px; }
+/* The overview's tour: every stop as a card in reading order, across the page's full width. */
+.tour-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.tour-steps li { display: flex; }
+.tour-step { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: none; color: var(--fg); font: inherit; text-align: left; cursor: pointer; transition: background-color 150ms; }
+.tour-step:hover { background: var(--hover); color: var(--hover-fg); }
+.tour-step:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* A skim stop is dashed; its label says "skim" in words. */
+.tour-step.skim { border-style: dashed; }
+/* Where the tour starts or resumes: the accent outline, and the mark says it in words. */
+.tour-step.here { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.tour-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 12px var(--mono); color: var(--muted); }
+.tour-step-mark { font: 600 12px var(--sans); }
+.tour-step-mark.start, .tour-step-mark.resume { color: var(--accent); }
+.tour-step-mark.seen { color: var(--add); }
+.tour-step-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tour-step-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; }
+.tour-step-text.mono { font: 500 13px var(--mono); }
+.tour-step-main .tag { flex: none; }
+@media (prefers-reduced-motion: reduce) { .tour-step { transition: none; } }
+/* The wrap-up's chips for the stops not seen yet: a set, not a sequence. */
+.route { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.route li { display: inline-flex; align-items: center; }
+.route-stop { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: none; color: var(--fg); font: 500 12.5px var(--mono); white-space: nowrap; cursor: pointer; }
+.route-stop:hover { background: var(--hover); color: var(--hover-fg); }
+.route-stop.skim { border-style: dashed; color: var(--muted); }
+.route-num { font-weight: 600; color: var(--muted); }
+.route-seen { color: var(--add); }
+.route-skipped { margin: 10px 0 0; }
 /* A stop's depth in words: deep stops outlined in the accent, skim stops plain. */
-.tag.depth.deep { border-color: var(--accent); color: var(--accent); }
 .tag.skip { color: var(--fg); }
-.seen-mark { color: var(--add); }
 
 .tour { display: block; }
 .rail { display: none; }
@@ -243,8 +275,6 @@ html.w-rail .rail { display: block; position: sticky; top: 0; max-height: calc(1
 .step-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); }
 .step-name.plain { font: 13px var(--sans); }
 .step-more { flex: none; color: var(--muted); font: 11.5px var(--mono); }
-.step-depth { flex: none; font: 500 10px/16px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-.step-depth.deep { color: var(--accent); }
 /* A stop's pending comments: a count in a small accent pill (its button's name says it too). */
 .step-pending { flex: none; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--accent-fg); font: 600 11px/18px var(--sans); text-align: center; }
 .step-pending[hidden] { display: none; }
@@ -254,6 +284,8 @@ html.w-rail .rail { display: block; position: sticky; top: 0; max-height: calc(1
 .mark.flag { width: auto; color: var(--warn); }
 .tour-main { min-width: 0; padding-bottom: calc(var(--bar-h, 0px) + 32px); }
 .topbar { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 24px; background: var(--bg); border-bottom: 1px solid var(--line); }
+/* Prev and Next stay at the right edge, so they don't move as the step label's width changes. */
+.topbar-nav { margin-left: auto; }
 .topbar-label { display: none; font-weight: 600; font-size: 13px; }
 .topbar .exit { flex: none; }
 html.w-rail .topbar-label { display: block; }
@@ -275,20 +307,31 @@ h2.stop-headline { max-width: 72ch; }
 .explain { display: flex; flex-direction: column; gap: 10px; font-size: 14.5px; }
 /* A skim stop's files that don't follow its example. */
 .differences { padding: 8px 12px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 0 6px 6px 0; }
+.stop-lead { font-size: 16px; line-height: 1.5; margin: 0; }
 .check-q { padding: 8px 12px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 6px 6px 0; }
 .stop .diff-view.card { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .wrapup h2 { font-size: 19px; }
 /* No bullets: each line starts "Stop n:", and a bullet would sit on a wrapped button's last line. */
-.unseen { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+/* The wrap-up: the review in the wide column, what backs it up beside it (under it when narrow). */
+.wrap-layout, .wrap-side, .wrap-main { display: flex; flex-direction: column; gap: 22px; }
+.skip-why { margin: 0; gap: 4px 12px; }
+.handled { margin: 0; color: var(--add); font-weight: 500; }
+/* The wrap-up's findings: the decision first, the comment folded under it. */
+.suggestion.compact { background: none; border-left: 0; padding: 0; margin-top: 6px; gap: 4px; }
+.suggestion-fold summary { cursor: pointer; color: var(--muted); width: fit-content; }
+.suggestion-fold summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.suggestion-fold p { margin: 6px 0 0; padding: 8px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 6px 6px 0; }
+html.w-cols .wrap-layout:not(.solo) { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 48px; align-items: start; }
 .view-heading:focus { outline: none; }
 .view-heading:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
 html.has-bar { scroll-padding-bottom: calc(var(--bar-h, 90px) + 16px); }
 /* Sticky top bar: focus scrolled into view lands below it. */
 html.w-rail { scroll-padding-top: 64px; }
-.review-bar.inline { position: static; max-height: none; overflow: visible; box-shadow: none; border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+/* z-index too: in the wrap-up's grid the card is a grid item, and grid items take z-index even when
+   static, so the bar's 10 would lift it over the sticky top bar's step menu. */
+.review-bar.inline { position: static; z-index: auto; max-height: none; overflow: visible; box-shadow: none; border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
 .review-bar.inline h2 { font-size: 15px; }
 .review-bar.inline h3.eyebrow { margin: 0; }
-.confirm-line { flex-direction: column; }
 .also { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .also-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .also-list li { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; }
@@ -356,17 +399,40 @@ html.w-rail { scroll-padding-top: 64px; }
 .dl.k-add .sign { color: var(--add); font-weight: 700; }
 .dl.k-del .sign { color: var(--danger); font-weight: 700; }
 .dl .code { white-space: pre; padding-right: 24px; }
+/* Changed words: a stronger tint of the row's own colour, plus an underline so it isn't colour alone. */
+.dl.k-add .word { background: color-mix(in srgb, var(--add) 38%, transparent); border-radius: 2px; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--add) 70%, transparent); text-underline-offset: 3px; }
+.dl.k-del .word { background: color-mix(in srgb, var(--danger) 36%, transparent); border-radius: 2px; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent); }
 .dl.hunk .code, .dl.eof .code { padding-left: 4px; }
 .annot { position: sticky; left: 0; width: 100cqw; display: flex; flex-direction: column; gap: 8px; padding: 8px 16px 10px calc(2 * var(--ln, 4ch) + 48px); background: var(--bg); border-block: 1px solid var(--line); font: 13px/1.5 var(--sans); }
-.finding-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-left: 3px solid var(--line); border-radius: 0 6px 6px 0; background: var(--card); color: var(--card-fg); }
-.finding-card.blocker, .finding-card.major { border-left-color: var(--danger); }
-.finding-card.minor { border-left-color: var(--warn); }
+/* Findings, pending comments and composers under a line share one width and one left edge. */
+.annot > * { max-width: 760px; box-sizing: border-box; }
+/* One card shape for everything under a line: a border, one radius, and a bar down the left edge
+   that says whose it is (a finding's severity, or the accent for your own comment). */
+.finding-card, .draft-card { border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--card-fg); box-shadow: inset 3px 0 0 var(--bar, var(--line)); }
+.finding-card { padding: 6px 12px 6px 14px; }
+.finding-card > summary { display: flex; align-items: baseline; gap: 8px; min-height: 24px; cursor: pointer; list-style: none; font-weight: 500; }
+.finding-headline { flex: 1; min-width: 0; }
+.finding-card > summary::-webkit-details-marker { display: none; }
+.finding-card > summary::before { content: "▸"; color: var(--muted); }
+.finding-card[open] > summary::before { content: "▾"; }
+.finding-card[open] > summary { margin-bottom: 6px; }
+.finding-card > :not(summary) { margin-left: 16px; }
+.finding-state { margin-left: auto; font-weight: 400; color: var(--muted); white-space: nowrap; }
+.fold-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; display: block; margin: auto; }
+.dv-full[aria-pressed="true"] { border-color: var(--accent); }
+.finding-card.blocker, .finding-card.major { --bar: var(--danger); }
+.finding-card.minor { --bar: var(--warn); }
 .finding-card .suggestion { background: none; }
 /* A pending comment, in place under its line or file header. */
-.draft-card { display: flex; flex-direction: column; gap: 6px; max-width: 760px; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; background: var(--bg); }
-.draft-card:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
+.draft-card { --bar: var(--accent); display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 10px 14px; }
+.draft-card .tag { align-self: center; }
+.draft-card .btn.ghost { color: var(--muted); }
+.draft-card .btn.ghost:hover, .draft-card .btn.ghost:focus-visible { color: var(--fg); }
+.draft-card .btn.danger:hover, .draft-card .btn.danger:focus-visible { color: var(--danger); border-color: var(--danger); }
+/* Focus moved here by the page (after Save, or the bar's ‹ ›) shows a ring only for keyboard use. */
+.draft-card:focus { outline: none; }
+.draft-card:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .tag.pending { border-color: var(--accent); color: var(--accent); align-self: center; }
-.in-review { color: var(--add); }
 .pending-meta { color: var(--accent); font-weight: 500; }
 .pending-meta:empty { display: none; }
 .draft-body { white-space: pre-wrap; overflow-wrap: anywhere; }

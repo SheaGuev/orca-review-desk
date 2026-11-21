@@ -9,6 +9,8 @@ import { formatShare } from "../src/breakdown/share";
 import type { CategoryId, FileStatus } from "../src/breakdown/types";
 import { stopForFile } from "../src/overview";
 import { stopView } from "../src/tour";
+import { message } from "../src/errors";
+import { prKey } from "../src/repo";
 import { h } from "./dom";
 import { plural } from "./parts";
 import type { TourContext } from "./tour";
@@ -96,7 +98,7 @@ const counts = (additions: number, deletions: number, binary = false, always = f
 
 /** Which categories the reviewer left open, per PR, in this frame's own storage. */
 function openStore(ctx: TourContext) {
-  const id = `changes-open:${ctx.guide.pr.repo}#${ctx.guide.pr.number}`;
+  const id = `changes-open:${prKey(ctx.guide.pr.repo, ctx.guide.pr.number)}`;
   let open = new Set<CategoryId>();
   try {
     const raw: unknown = JSON.parse(localStorage.getItem(id) ?? "[]");
@@ -131,9 +133,38 @@ function placeOf(ctx: TourContext, path: string) {
     label: skip ? "Skipped →" : `Stop ${at + 1} →`,
     aria: skip
       ? `${path} is skipped by design: go to the skipped files`
-      : `Go to stop ${at + 1}: ${ctx.stops[at].headline}`,
+      : `Go to stop ${at + 1}: ${ctx.stops[at]?.headline ?? ""}`,
     go: () => ctx.go(stopView(at), skip ? "file" : "heading", { file: path, line: null }),
   };
+}
+
+/** A file's name and its "Stop 3 →", both pressed to go where the tour reviews it. */
+function placeLinks(
+  place: NonNullable<ReturnType<typeof placeOf>>,
+  o: { nameClass: string; title: string; label: Node[] },
+): { nameEl: HTMLElement; where: HTMLElement } {
+  const nameEl = h(
+    "button",
+    {
+      type: "button",
+      class: o.nameClass,
+      title: o.title,
+      "aria-label": `${o.title}: ${place.aria}`,
+    },
+    ...o.label,
+  );
+  nameEl.addEventListener("click", place.go);
+  const where = h(
+    "button",
+    {
+      type: "button",
+      class: `btn sm ghost bd-where${place.label === "Skipped →" ? " off" : ""}`,
+      "aria-label": place.aria,
+    },
+    place.label,
+  );
+  where.addEventListener("click", place.go);
+  return { nameEl, where };
 }
 
 function fileRow(ctx: TourContext, file: BreakdownFile): HTMLElement {
@@ -143,35 +174,13 @@ function fileRow(ctx: TourContext, file: BreakdownFile): HTMLElement {
   const place = placeOf(ctx, file.path);
   const title = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
   const label = [h("span", { class: "fname" }, name), h("span", { class: "fdir" }, dir)];
-  const deleted = file.status === "D" ? " gone" : "";
-  let nameEl: HTMLElement;
-  let where: HTMLElement;
-  if (place) {
-    nameEl = h(
-      "button",
-      {
-        type: "button",
-        class: `bd-name${deleted}`,
-        title,
-        "aria-label": `${title}: ${place.aria}`,
-      },
-      ...label,
-    );
-    nameEl.addEventListener("click", place.go);
-    where = h(
-      "button",
-      {
-        type: "button",
-        class: `btn sm ghost bd-where${place.label === "Skipped →" ? " off" : ""}`,
-        "aria-label": place.aria,
-      },
-      place.label,
-    );
-    where.addEventListener("click", place.go);
-  } else {
-    nameEl = h("span", { class: `bd-name${deleted}`, title }, ...label);
-    where = h("span", { class: "bd-where off small" }, "not in guide");
-  }
+  const nameClass = `bd-name${file.status === "D" ? " gone" : ""}`;
+  const { nameEl, where } = place
+    ? placeLinks(place, { nameClass, title, label })
+    : {
+        nameEl: h("span", { class: nameClass, title }, ...label),
+        where: h("span", { class: "bd-where off small" }, "not in guide"),
+      };
   return h(
     "li",
     { class: "bd-file" },
@@ -284,28 +293,22 @@ function filled(ctx: TourContext, b: Breakdown): (Node | null)[] {
 export function changesSection(ctx: TourContext): HTMLElement {
   const aside = h("span", { class: "muted small" });
   const body = h("div", { class: "bd" }, h("p", { class: "muted small" }, "Reading the changes…"));
-  const load = () =>
-    ctx
-      .breakdown()
-      .then((b) => {
-        aside.textContent = plural(b.fileCount, "file");
-        body.replaceChildren(...filled(ctx, b).filter((x): x is Node => x !== null));
-      })
-      .catch((e: unknown) => {
-        const retry = h("button", { type: "button", class: "link small" }, "Try again");
-        retry.addEventListener("click", () => {
-          body.replaceChildren(h("p", { class: "muted small" }, "Reading the changes…"));
-          void load();
-        });
-        body.replaceChildren(
-          h(
-            "p",
-            { class: "muted small" },
-            `Couldn’t read the changes: ${e instanceof Error ? e.message : String(e)} `,
-            retry,
-          ),
-        );
+  const load = async (): Promise<void> => {
+    try {
+      const b = await ctx.breakdown();
+      aside.textContent = plural(b.fileCount, "file");
+      body.replaceChildren(...filled(ctx, b).filter((x): x is Node => x !== null));
+    } catch (e) {
+      const retry = h("button", { type: "button", class: "link small" }, "Try again");
+      retry.addEventListener("click", () => {
+        body.replaceChildren(h("p", { class: "muted small" }, "Reading the changes…"));
+        void load();
       });
+      body.replaceChildren(
+        h("p", { class: "muted small" }, `Couldn’t read the changes: ${message(e)} `, retry),
+      );
+    }
+  };
   void load();
   return h(
     "section",

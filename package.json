@@ -4,12 +4,20 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p . --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
     "test": "orca plugin test .",
     "check": "orca plugin check .",
     "validate": "orca plugin validate ."
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^21.0.4",
     "@types/node": "^22.10.0",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
     "typescript": "^5.7.0"
   }
 }

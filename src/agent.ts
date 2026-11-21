@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolCall } from "./diff";
 import { run } from "./exec";
+import { asList, asObj, asString, isObj, parseJson } from "./json";
 
 export type Harness = "claude" | "codex";
 
@@ -62,39 +63,38 @@ export function agentCommand(
 
 const tail = (text: string) => text.trim().split("\n").slice(-4).join(" ").slice(0, 400);
 
-type ClaudeResult = { type?: string; result?: string; is_error?: boolean };
-type ClaudeEvent = ClaudeResult & {
-  message?: { content?: { type?: string; name?: unknown; input?: unknown }[] };
-};
+/** One event of Claude's output as printed: unchecked fields, read with the json helpers. */
+type ClaudeEvent = Record<string, unknown>;
 
-function claudeEvents(stdout: string): ClaudeEvent[] | ClaudeEvent | null {
+/** What `claude -p` printed, parsed; null when it is not JSON. */
+function claudeOutput(stdout: string): unknown {
   try {
-    return JSON.parse(stdout) as ClaudeEvent[] | ClaudeEvent;
+    return parseJson(stdout);
   } catch {
     return null;
   }
 }
 
 /** `claude -p --output-format json` prints one result object, or (newer versions) every event as a list. */
-export function claudeResult(stdout: string): ClaudeResult | null {
-  const parsed = claudeEvents(stdout);
-  if (!parsed || !Array.isArray(parsed)) return parsed;
-  return [...parsed].reverse().find((e) => e.type === "result") ?? null;
+export function claudeResult(stdout: string): ClaudeEvent | null {
+  const parsed = claudeOutput(stdout);
+  if (!Array.isArray(parsed)) return isObj(parsed) ? parsed : null;
+  return (
+    parsed
+      .filter(isObj)
+      .filter((e) => e.type === "result")
+      .at(-1) ?? null
+  );
 }
 
 /** The tools the agent called, from the assistant events; empty when only a result was printed. */
 export function claudeToolCalls(stdout: string): ToolCall[] {
-  const parsed = claudeEvents(stdout);
-  if (!Array.isArray(parsed)) return [];
   const calls: ToolCall[] = [];
-  for (const e of parsed) {
-    if (e.type !== "assistant") continue;
-    for (const c of e.message?.content ?? []) {
-      if (c?.type === "tool_use" && typeof c.name === "string")
-        calls.push({
-          name: c.name,
-          input: c.input && typeof c.input === "object" ? (c.input as Record<string, unknown>) : {},
-        });
+  for (const e of asList(claudeOutput(stdout))) {
+    if (!isObj(e) || e.type !== "assistant") continue;
+    for (const c of asList(asObj(e.message).content)) {
+      if (isObj(c) && c.type === "tool_use" && typeof c.name === "string")
+        calls.push({ name: c.name, input: asObj(c.input) });
     }
   }
   return calls;
@@ -133,11 +133,11 @@ export async function runAgent(
     }
     // Claude's own error (such as "Not logged in") is in its result, even when it exits 1.
     const outcome = claudeResult(result.stdout);
-    if (outcome?.is_error)
-      throw new Error(`Claude Code: ${String(outcome.result ?? "").slice(0, 400)}`);
+    if (outcome?.is_error === true)
+      throw new Error(`Claude Code: ${asString(outcome.result).slice(0, 400)}`);
     if (result.code !== 0 || !outcome)
       throw new Error(`claude exited with ${result.code}: ${tail(result.stderr || result.stdout)}`);
-    return { text: outcome.result ?? "", toolCalls: claudeToolCalls(result.stdout) };
+    return { text: asString(outcome.result), toolCalls: claudeToolCalls(result.stdout) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

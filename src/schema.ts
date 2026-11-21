@@ -1,14 +1,18 @@
 // The prguide data contract. The worker checks what the agent writes against it, and the guide
-// editor checks the file it opens. Shared by both sides, so it imports nothing.
+// editor checks the file it opens. Shared by both sides, so it imports only pure helpers.
 //
 // v2 splits every point into a short `headline` and an unlimited `detail`, adds findings with
 // ready-to-post comments, a note for every changed file, and which files the agent actually saw.
 // v1 guides still open (upgraded for drawing) and count as stale, so they are replaced.
 
+import { isObj } from "./json";
+
 export const SCHEMA_ID = "prguide/v2";
 export const SCHEMA_V1 = "prguide/v1";
 
 export type RiskLevel = "low" | "medium" | "high";
+/** The level as one capitalised word, for a badge or a sentence. */
+export const RISK_WORD: Record<RiskLevel, string> = { low: "Low", medium: "Medium", high: "High" };
 export type ClaimVerdict = "matches" | "mismatch" | "unclear";
 export type ReviewRequest = "user" | "team" | "authored" | "manual";
 export type Severity = "blocker" | "major" | "minor" | "nit";
@@ -62,6 +66,8 @@ export type Stop = {
   files: string[];
   why: StopWhy;
   areaId: string;
+  /** A few words naming the stop's idea, for the step menu and its heading. Older guides have none. */
+  title?: string;
   headline: string;
   detail?: string;
   /** 1-3 line ranges in the first file that explain the stop; the tour shows only those hunks. */
@@ -90,8 +96,8 @@ export const SKIP_REASONS: readonly SkipReason[] = [
 
 /** A stored stop in the current shape; a legacy single-file stop becomes a deep stop on it. */
 export function upgradeStop(r: Stop | LegacyStop): Stop {
-  if ("files" in r && Array.isArray(r.files)) return r;
-  const { file, ...rest } = r as LegacyStop;
+  if (("files" in r && Array.isArray(r.files)) || !("file" in r)) return r;
+  const { file, ...rest } = r;
   return { depth: "deep", files: [file], why: "core", ...rest };
 }
 
@@ -206,6 +212,8 @@ export const WORD_LIMITS = {
   summary: 20,
   finding: 20,
   readingOrder: 25,
+  /** A stop's name in the step menu and above its sentence: "Card primitive". */
+  stopTitle: 5,
   check: 20,
 } as const;
 
@@ -229,9 +237,6 @@ export type TourRules = {
 };
 
 type Problems = string[];
-
-const isObj = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
 
 export const wordCount = (text: string): number =>
   text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
@@ -326,6 +331,9 @@ function areaFields(p: Problems, g: Record<string, unknown>, full: boolean): voi
  */
 type Opts = { full: boolean; words: boolean; tour: boolean };
 
+const isLineNumber = (n: unknown): n is number =>
+  typeof n === "number" && Number.isInteger(n) && n > 0;
+
 function focusRanges(p: Problems, v: unknown, path: string): void {
   if (!Array.isArray(v)) {
     p.push(`${path}: expected a list of { start, end } line ranges`);
@@ -335,11 +343,9 @@ function focusRanges(p: Problems, v: unknown, path: string): void {
     p.push(`${path}: give 1 to ${MAX_FOCUS} ranges, not ${v.length}`);
   v.forEach((r, i) =>
     obj(p, r, `${path}[${i}]`, (x) => {
-      const ok = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n > 0;
-      if (!ok(x.start) || !ok(x.end))
+      if (!isLineNumber(x.start) || !isLineNumber(x.end))
         p.push(`${path}[${i}]: start and end must be PR-head line numbers`);
-      else if ((x.start as number) > (x.end as number))
-        p.push(`${path}[${i}]: start ${x.start} is after end ${x.end}`);
+      else if (x.start > x.end) p.push(`${path}[${i}]: start ${x.start} is after end ${x.end}`);
     }),
   );
 }
@@ -364,7 +370,8 @@ function point(p: Problems, v: unknown, path: string, limit: number | null, o: O
   });
 }
 
-function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
+/** The title, the risk and the three summary points. */
+function headFields(p: Problems, g: Record<string, unknown>, o: Opts): void {
   headline(p, g.title, "title", WORD_LIMITS.title, o);
   obj(p, g.risk, "risk", (r) => {
     oneOf(p, r.level, "risk.level", ["low", "medium", "high"]);
@@ -388,6 +395,9 @@ function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
         optStr(p, pt.detail, `summary.${k}.detail`);
       });
   });
+}
+
+function findingFields(p: Problems, g: Record<string, unknown>, o: Opts): void {
   const ids = new Set<string>();
   arr(p, g.findings, "findings", (f, fp) =>
     obj(p, f, fp, (x) => {
@@ -405,7 +415,10 @@ function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
       if (x.suggestedComment !== null) str(p, x.suggestedComment, `${fp}.suggestedComment`);
     }),
   );
-  areaFields(p, g, o.full);
+}
+
+/** The tour's stops; see `Opts` for what each round asks of them. */
+function stopFields(p: Problems, g: Record<string, unknown>, o: Opts): void {
   arr(p, g.readingOrder, "readingOrder", (r, rp) =>
     obj(p, r, rp, (x) => {
       // A stored guide may hold stops from before full coverage: one `file`, read as a deep stop.
@@ -421,6 +434,16 @@ function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
         optStr(p, x.differences, `${rp}.differences`);
       }
       str(p, x.areaId, `${rp}.areaId`);
+      // Asked for, never required: a stop without one falls back to its file, not a repair round.
+      if (x.title !== undefined)
+        headline(
+          p,
+          x.title,
+          `${rp}.title`,
+          WORD_LIMITS.stopTitle,
+          o,
+          "a few words naming the idea, the sentence goes in headline",
+        );
       headline(p, x.headline, `${rp}.headline`, WORD_LIMITS.readingOrder, o);
       optStr(p, x.detail, `${rp}.detail`);
       // The agent must send focus on every stop and a check on deep ones; a stored guide is
@@ -432,13 +455,9 @@ function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
       else if (x.check !== undefined) optStr(p, x.check, `${rp}.check`);
     }),
   );
-  arr(p, g.files, "files", (f, fp) =>
-    obj(p, f, fp, (x) => {
-      str(p, x.path, `${fp}.path`);
-      str(p, x.note, `${fp}.note`);
-    }),
-  );
-  flowsAndClaims(p, g);
+}
+
+function sinceFields(p: Problems, g: Record<string, unknown>, o: Opts): void {
   if (g.sinceLastReview !== null && g.sinceLastReview !== undefined) {
     obj(p, g.sinceLastReview, "sinceLastReview", (s) => {
       arr(p, s.changes, "sinceLastReview.changes", (c, cp) =>
@@ -459,6 +478,21 @@ function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
       }
     });
   }
+}
+
+function contentV2(p: Problems, g: Record<string, unknown>, o: Opts): void {
+  headFields(p, g, o);
+  findingFields(p, g, o);
+  areaFields(p, g, o.full);
+  stopFields(p, g, o);
+  arr(p, g.files, "files", (f, fp) =>
+    obj(p, f, fp, (x) => {
+      str(p, x.path, `${fp}.path`);
+      str(p, x.note, `${fp}.note`);
+    }),
+  );
+  flowsAndClaims(p, g);
+  sinceFields(p, g, o);
 }
 
 /** Files, lines and area ids the guide points at must exist in this PR's diff. */
@@ -486,9 +520,10 @@ function references(p: Problems, g: AgentGuide, ctx: DiffContext): void {
     );
     if (!areaIds.has(r.areaId))
       p.push(`readingOrder[${i}].areaId: "${r.areaId}" is not one of the areas' ids`);
-    if (ok[0])
+    const primary = r.files[0];
+    if (ok[0] && primary !== undefined)
       (r.focus ?? []).forEach((range, j) => {
-        if (!overlapsDiff(ctx, r.files[0], range))
+        if (!overlapsDiff(ctx, primary, range))
           p.push(
             `readingOrder[${i}].focus[${j}]: lines ${range.start}-${range.end} are not in the diff of ${r.files[0]} (the stop's first file); use "+" side lines from its hunks`,
           );
@@ -580,73 +615,76 @@ export function checkAgentGuide(
   const p: Problems = [];
   if (!isObj(value)) return ["(root): expected a JSON object"];
   contentV2(p, value, { full: false, words: opts.words !== false, tour: opts.tour !== false });
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- contentV2 found nothing wrong with its shape
   if (ctx && p.length === 0) references(p, value as AgentGuide, ctx);
   return p;
 }
 
-/**
- * Deterministic fixes for what a repair round could not get right: a finding line outside the
- * diff becomes a whole-file finding, a file with no note gets a placeholder, a duplicate note is
- * dropped, a focus range that is malformed or outside the diff is dropped (a stop left with none
- * shows its whole file), and a missing check is left out. Returns what changed, for the log.
- */
-export function settle(g: AgentGuide, ctx: DiffContext): { guide: AgentGuide; fixed: string[] } {
-  const fixed: string[] = [];
-  const readingOrder = g.readingOrder.flatMap((r, i) => {
-    const {
-      focus: rawFocus,
-      check: rawCheck,
-      ...rest
-    } = r as Stop & {
-      focus?: unknown;
-      check?: unknown;
-    };
-    // Files this PR doesn't change (or that git leaves out, like lockfiles) leave the stop.
-    const files = r.files.filter((f) => ctx.changed.includes(f));
-    if (files.length < r.files.length)
-      fixed.push(
-        `readingOrder[${i}]: dropped ${r.files.filter((f) => !files.includes(f)).join(", ")}, not changed files`,
-      );
-    if (!files.length) return [];
-    const depth: StopDepth = rest.depth ?? "deep";
-    const stop: Stop = {
-      ...rest,
-      files,
-      depth,
-      why: rest.why ?? (depth === "skim" ? "routine" : "core"),
-    };
-    const primary = files[0];
-    // Focus is on the first file: when that one left, so does its focus.
-    const raw: unknown[] = Array.isArray(rawFocus) && primary === r.files[0] ? rawFocus : [];
-    const focus = raw
-      .filter(
-        (x): x is LineRange =>
-          isObj(x) &&
-          Number.isInteger(x.start) &&
-          Number.isInteger(x.end) &&
-          (x.start as number) > 0 &&
-          (x.start as number) <= (x.end as number) &&
-          overlapsDiff(ctx, primary, x as LineRange),
-      )
-      .slice(0, MAX_FOCUS)
-      .map(({ start, end }) => ({ start, end }));
-    if (raw.length > focus.length || (rawFocus !== undefined && !Array.isArray(rawFocus)))
-      fixed.push(
-        `readingOrder[${i}] ${primary}: kept ${focus.length} of ${raw.length} focus ranges${focus.length ? "" : ", shows the whole file"}`,
-      );
-    else if (rawFocus === undefined) fixed.push(`readingOrder[${i}] ${primary}: no focus ranges`);
-    if (focus.length) stop.focus = focus;
-    if (typeof rawCheck === "string" && rawCheck.trim()) stop.check = rawCheck;
-    else if (depth !== "skim") fixed.push(`readingOrder[${i}] ${primary}: no check question`);
-    return [stop];
-  });
-  const findings = g.findings.map((f) => {
-    if (f.line !== null && !ctx.isCommentable(f.file, f.line)) {
-      fixed.push(`${f.id}: line ${f.line} is outside the diff, kept as a file comment`);
-      return { ...f, line: null };
-    }
-    return f;
-  });
+export type Checked<T> = { ok: true; guide: T } | { ok: false; problems: string[] };
+
+/** `value` as an AgentGuide when `checkAgentGuide` finds nothing wrong with it, else what it found. */
+export function parseAgentGuide(
+  value: unknown,
+  ctx?: DiffContext,
+  opts: { words?: boolean; tour?: boolean } = {},
+): Checked<AgentGuide> {
+  const problems = checkAgentGuide(value, ctx, opts);
+  if (problems.length) return { ok: false, problems };
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- checkAgentGuide just accepted it
+  return { ok: true, guide: value as AgentGuide };
+}
+
+/** One stop settled against the diff, or none when no changed file is left in it. */
+function settleStop(r: Stop, i: number, ctx: DiffContext, fixed: string[]): Stop[] {
+  const {
+    focus: rawFocus,
+    check: rawCheck,
+    ...rest
+  } = r as Stop & {
+    focus?: unknown;
+    check?: unknown;
+  };
+  // Files this PR doesn't change (or that git leaves out, like lockfiles) leave the stop.
+  const files = r.files.filter((f) => ctx.changed.includes(f));
+  if (files.length < r.files.length)
+    fixed.push(
+      `readingOrder[${i}]: dropped ${r.files.filter((f) => !files.includes(f)).join(", ")}, not changed files`,
+    );
+  const [primary] = files;
+  if (primary === undefined) return [];
+  const depth: StopDepth = rest.depth ?? "deep";
+  const stop: Stop = {
+    ...rest,
+    files,
+    depth,
+    why: rest.why ?? (depth === "skim" ? "routine" : "core"),
+  };
+  // Focus is on the first file: when that one left, so does its focus.
+  const raw: unknown[] = Array.isArray(rawFocus) && primary === r.files[0] ? rawFocus : [];
+  const focus = raw
+    .filter(
+      (x): x is LineRange =>
+        isObj(x) &&
+        isLineNumber(x.start) &&
+        isLineNumber(x.end) &&
+        x.start <= x.end &&
+        overlapsDiff(ctx, primary, { start: x.start, end: x.end }),
+    )
+    .slice(0, MAX_FOCUS)
+    .map(({ start, end }) => ({ start, end }));
+  if (raw.length > focus.length || (rawFocus !== undefined && !Array.isArray(rawFocus)))
+    fixed.push(
+      `readingOrder[${i}] ${primary}: kept ${focus.length} of ${raw.length} focus ranges${focus.length ? "" : ", shows the whole file"}`,
+    );
+  else if (rawFocus === undefined) fixed.push(`readingOrder[${i}] ${primary}: no focus ranges`);
+  if (focus.length) stop.focus = focus;
+  if (typeof rawCheck === "string" && rawCheck.trim()) stop.check = rawCheck;
+  else if (depth !== "skim") fixed.push(`readingOrder[${i}] ${primary}: no check question`);
+  return [stop];
+}
+
+/** One note per changed file: duplicates and notes on other files dropped, missing ones filled in. */
+function settleFileNotes(g: AgentGuide, ctx: DiffContext, fixed: string[]): AgentGuide["files"] {
   const seen = new Set<string>();
   const files = g.files.filter((f) => {
     if (seen.has(f.path) || !ctx.changed.includes(f.path)) return false;
@@ -658,6 +696,26 @@ export function settle(g: AgentGuide, ctx: DiffContext): { guide: AgentGuide; fi
     fixed.push(`${path}: no note from the agent`);
     files.push({ path, note: "No note from the agent." });
   }
+  return files;
+}
+
+/**
+ * Deterministic fixes for what a repair round could not get right: a finding line outside the
+ * diff becomes a whole-file finding, a file with no note gets a placeholder, a duplicate note is
+ * dropped, a focus range that is malformed or outside the diff is dropped (a stop left with none
+ * shows its whole file), and a missing check is left out. Returns what changed, for the log.
+ */
+export function settle(g: AgentGuide, ctx: DiffContext): { guide: AgentGuide; fixed: string[] } {
+  const fixed: string[] = [];
+  const readingOrder = g.readingOrder.flatMap((r, i) => settleStop(r, i, ctx, fixed));
+  const findings = g.findings.map((f) => {
+    if (f.line !== null && !ctx.isCommentable(f.file, f.line)) {
+      fixed.push(`${f.id}: line ${f.line} is outside the diff, kept as a file comment`);
+      return { ...f, line: null };
+    }
+    return f;
+  });
+  const files = settleFileNotes(g, ctx, fixed);
   return { guide: { ...g, findings, readingOrder, files }, fixed };
 }
 
@@ -702,6 +760,14 @@ function prFields(p: Problems, value: Record<string, unknown>): void {
     str(p, g.at, "generatedBy.at");
   });
   oneOf(p, value.reviewRequest, "reviewRequest", ["user", "team", "authored", "manual"]);
+}
+
+/** `value` as a guide file of either version when `checkGuide` finds nothing wrong, else what it found. */
+export function parseGuide(value: unknown): Checked<PrGuide | PrGuideV1> {
+  const problems = checkGuide(value);
+  if (problems.length) return { ok: false, problems };
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- checkGuide just accepted it
+  return { ok: true, guide: value as PrGuide | PrGuideV1 };
 }
 
 /** Problems with a whole guide file, v1 or v2; empty when the editor can draw it. */
@@ -779,22 +845,23 @@ export function riskHeadline(g: PrGuide | PrGuideV1): string {
   return g.schema === SCHEMA_V1 ? g.risk.summary : g.risk.headline;
 }
 
+function withoutOwnDetail<T extends { detail?: string }>(x: T): Omit<T, "detail"> {
+  const { detail: _, ...rest } = x;
+  return rest;
+}
+
 /** Drops every `detail` field, for a guide too big for one storage value. */
 export function withoutDetail(g: PrGuide): PrGuide {
-  const strip = <T extends { detail?: string }>(x: T): T => {
-    const { detail: _, ...rest } = x;
-    return rest as T;
-  };
   return {
     ...g,
-    risk: { ...strip(g.risk), beforeMerge: g.risk.beforeMerge.map(strip) },
+    risk: { ...withoutOwnDetail(g.risk), beforeMerge: g.risk.beforeMerge.map(withoutOwnDetail) },
     summary: {
-      what: strip(g.summary.what),
-      why: strip(g.summary.why),
-      impact: strip(g.summary.impact),
+      what: withoutOwnDetail(g.summary.what),
+      why: withoutOwnDetail(g.summary.why),
+      impact: withoutOwnDetail(g.summary.impact),
     },
     findings: g.findings.map((f) => ({ ...f, detail: "" })),
-    readingOrder: g.readingOrder.map(strip),
+    readingOrder: g.readingOrder.map(withoutOwnDetail),
     trimmed: true,
   };
 }
@@ -804,7 +871,7 @@ export function extractJson(text: string): unknown {
   const trimmed = text.trim();
   const candidates: string[] = [trimmed];
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(trimmed);
-  if (fence) candidates.push(fence[1].trim());
+  if (fence?.[1] !== undefined) candidates.push(fence[1].trim());
   const first = trimmed.indexOf("{");
   const last = trimmed.lastIndexOf("}");
   if (first !== -1 && last > first) candidates.push(trimmed.slice(first, last + 1));

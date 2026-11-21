@@ -107,5 +107,5 @@ test("repo labels drop the owner unless two repos share a name", () => {
     ],
   );
   const { queue } = buildQueue([item({ repo: "acme/web" })]);
-  assert.equal(queue[0].repoLabel, "web");
+  assert.equal(queue[0]?.repoLabel, "web");
 });

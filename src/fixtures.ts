@@ -160,3 +160,10 @@ export const PR_VIEW = {
     { path: "README.md", additions: 2, deletions: 0 },
   ],
 };
+
+/** `list[index]`, failing the test when there is nothing there. */
+export function nth<T>(list: readonly T[], index = 0): T {
+  const value = list[index];
+  if (value === undefined) throw new Error(`nothing at index ${index} of ${list.length}`);
+  return value;
+}

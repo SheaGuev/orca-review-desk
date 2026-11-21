@@ -1,14 +1,15 @@
 // Runs the real worker against a mock Orca host, with git, gh and the agent CLI faked.
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, assert, mockHost, mountWorker, test } from "orca/testing";
 import { setRunner, type RunOptions } from "./exec";
-import { AGENT_GUIDE, DIFF, PR_VIEW } from "./fixtures";
+import { AGENT_GUIDE, DIFF, PR_VIEW, nth } from "./fixtures";
 import type { QueueState } from "./protocol";
 import * as main from "./worker";
 import type { Draft } from "./review";
-import { localDay } from "./worker";
+import { localDay } from "./store";
+import type { TourState } from "./tour";
 
 type Call = { cmd: string; args: string[]; options?: RunOptions };
 
@@ -43,6 +44,8 @@ function fakeTools(opts: {
   objects?: { present: boolean };
   /** The repo's .orca/diff-breakdown.json at the PR head; none when left out. */
   overrides?: string;
+  /** The agent CLI answers only once this settles, so a test can act while a run is under way. */
+  agentGate?: Promise<void>;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -102,7 +105,7 @@ function fakeTools(opts: {
     if (cmd === "gh" && args[0] === "api" && args[1] === "user") return ok("me\n");
     if (cmd === "gh" && args[0] === "api" && args.includes("POST")) {
       const path = args[args.indexOf("POST") + 1];
-      if (path.endsWith("/reviews"))
+      if (path?.endsWith("/reviews"))
         return ok(JSON.stringify({ html_url: "https://github.com/acme/api/pull/7#review-1" }));
       const body = JSON.parse(options?.input ?? "{}") as { path?: string };
       if (opts.refuseFileComments?.includes(body.path ?? ""))
@@ -134,6 +137,7 @@ function fakeTools(opts: {
     // The clone's remote names the repo's old owner; GitHub says where it lives now.
     if (cmd === "gh" && args[0] === "repo" && args[1] === "view")
       return ok(args[2] === "old-owner/api" ? "acme/api\n" : `${args[2]}\n`);
+    if (cmd === "claude") await opts.agentGate;
     if (cmd === "claude")
       return ok(
         JSON.stringify([
@@ -169,6 +173,20 @@ const SETTINGS = {
   skipDrafts: true,
 };
 
+/** The `pr` block of a stored guide for PR #7 at its head; a stored guide must pass `checkGuide`. */
+const STORED_PR = {
+  repo: "acme/api",
+  number: 7,
+  url: PR_VIEW.url,
+  author: "sam",
+  commit: PR_VIEW.headRefOid,
+  baseRef: "main",
+  headRef: PR_VIEW.headRefName,
+  additions: 120,
+  deletions: 30,
+  fileCount: 4,
+};
+
 let dir = "";
 afterEach(async () => {
   await current?.deactivate();
@@ -188,6 +206,7 @@ async function setup(
     refuseFileComments?: string[];
     objects?: { present: boolean };
     overrides?: string;
+    agentGate?: Promise<void>;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -239,10 +258,10 @@ test("lists a requested review and waits for the repository to be turned on", as
   const state = latest() as QueueState;
   assert.equal(state.queue.length, 0, "no guide coming, so not in the queue");
   assert.equal(state.notQueued.length, 1);
-  assert.equal(state.notQueued[0].key, "acme/api#7");
-  assert.equal(state.notQueued[0].status, "none");
-  assert.equal(state.notQueued[0].manualReason, "Repository not turned on yet");
-  assert.equal(state.notQueued[0].repoLabel, "api");
+  assert.equal(state.notQueued[0]?.key, "acme/api#7");
+  assert.equal(state.notQueued[0]?.status, "none");
+  assert.equal(state.notQueued[0]?.manualReason, "Repository not turned on yet");
+  assert.equal(state.notQueued[0]?.repoLabel, "api");
   assert.deepEqual(state.repos, [{ repo: "acme/api", optIn: null, hasClone: true, pending: 1 }]);
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 0, "no agent run before opt-in");
 });
@@ -269,7 +288,7 @@ test("turning a repository on writes the guide with worker-filled facts", async 
       ["Other", 1, 1, 0],
     ],
   );
-  assert.equal(all()[0].risk, "high");
+  assert.equal(all()[0]?.risk, "high");
   assert.deepEqual(host.data().storage.runs, { day: localDay(), count: 1 });
 
   const agent = calls.find((c) => c.cmd === "claude") as Call;
@@ -298,7 +317,7 @@ test("asks the agent once more when its reply does not match the schema", async 
   await until(() => all()[0]?.status === "ready", "the repaired guide");
   const runs = calls.filter((c) => c.cmd === "claude");
   assert.equal(runs.length, 2);
-  assert.ok(runs[1].options?.input?.includes("risk.level: expected one of low, medium, high"));
+  assert.ok(runs[1]?.options?.input?.includes("risk.level: expected one of low, medium, high"));
   assert.ok(host.data().storage["guide:acme/api#7"]);
 });
 
@@ -308,7 +327,7 @@ test("a reply that stays wrong marks the PR failed instead of storing it", async
   });
   await until(() => all()[0]?.status === "failed", "the failure");
   assert.equal(host.data().storage["guide:acme/api#7"], undefined);
-  assert.ok(all()[0].error?.includes("JSON"));
+  assert.ok(all()[0]?.error?.includes("JSON"));
 });
 
 test("Review opens the guide file in the repo workspace and remembers what you saw", async () => {
@@ -316,13 +335,22 @@ test("Review opens the guide file in the repo workspace and remembers what you s
     "optin:acme/api": true,
   });
   await until(() => all()[0]?.status === "ready", "the guide");
+  // A guide written under the old name ("7.prtour.json") is replaced, not left beside the new one.
+  await mkdir(join(dir, ".pr-tour"), { recursive: true });
+  await writeFile(join(dir, ".pr-tour/7.prtour.json"), "{}");
   assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), { opened: true });
 
+  // "pr-7": the tab is named after the file, and a bare "7" does not say it is a PR.
   assert.deepEqual(host.callsOf("editor.open").at(-1), {
     workspaceId: "w1",
-    path: ".pr-tour/7.prtour.json",
+    path: ".pr-tour/pr-7.prtour.json",
   });
-  const written = JSON.parse(await readFile(join(dir, ".pr-tour/7.prtour.json"), "utf8"));
+  assert.deepEqual(
+    await readdir(join(dir, ".pr-tour")),
+    ["pr-7.prtour.json"],
+    "the old file is gone",
+  );
+  const written = JSON.parse(await readFile(join(dir, ".pr-tour/pr-7.prtour.json"), "utf8"));
   assert.equal(written.pr.number, 7);
   const exclude = await readFile(join(dir, ".git/info/exclude"), "utf8");
   assert.ok(exclude.includes(".pr-tour/"), "the guide folder stays out of git status");
@@ -341,7 +369,7 @@ test("respects the daily limit for automatic runs", async () => {
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 0);
-  assert.equal(all()[0].status, "none");
+  assert.equal(all()[0]?.status, "none");
   assert.deepEqual(latest()?.notice, {
     tone: "warning",
     text: "Automatic guides paused until tomorrow · Generate still works",
@@ -370,7 +398,7 @@ test("the status bar command opens the focused branch guide, writing one first w
   await until(() => host.callsOf("editor.open").length === 1, "the guide to open");
   assert.deepEqual(host.callsOf("editor.open")[0], {
     workspaceId: "w1",
-    path: ".pr-tour/7.prtour.json",
+    path: ".pr-tour/pr-7.prtour.json",
   });
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 1);
   assert.equal(
@@ -422,7 +450,7 @@ test("coverage records the files the agent opened with its tools", async () => {
 test("after the repair round, stray lines and missing notes are settled instead of failing", async () => {
   const sloppy = JSON.stringify({
     ...AGENT_GUIDE,
-    findings: [{ ...AGENT_GUIDE.findings[0], line: 400 }],
+    findings: [{ ...nth(AGENT_GUIDE.findings, 0), line: 400 }],
     files: AGENT_GUIDE.files.slice(1),
   });
   const { host, calls, all } = await setup([sloppy, sloppy], { "optin:acme/api": true });
@@ -436,16 +464,24 @@ test("after the repair round, stray lines and missing notes are settled instead 
 test("a guide from the older version counts as stale and is replaced", async () => {
   const v1 = {
     schema: "prguide/v1",
-    pr: { commit: PR_VIEW.headRefOid },
-    risk: { level: "low", summary: "Old summary." },
-    generatedBy: { at: new Date().toISOString() },
+    title: "Record session end reasons",
+    pr: STORED_PR,
+    risk: { level: "low", summary: "Old summary.", beforeMerge: [] },
+    summary: { what: "w", why: "y", impact: "i" },
+    areas: [],
+    readingOrder: [],
+    flows: [],
+    claimsCheck: [],
+    sinceLastReview: null,
+    generatedBy: { harness: "claude", model: null, at: new Date().toISOString() },
+    reviewRequest: "user",
   };
   const { latest, all } = await setup([JSON.stringify(AGENT_GUIDE)], {
     "guide:acme/api#7": v1,
   });
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
-  assert.equal(all()[0].status, "stale");
-  assert.equal(all()[0].riskSummary, "Old summary.");
+  assert.equal(all()[0]?.status, "stale");
+  assert.equal(all()[0]?.riskSummary, "Old summary.");
 });
 
 test("the queue orders by when your review was asked for, and the guide records it", async () => {
@@ -469,7 +505,7 @@ test("the queue orders by when your review was asked for, and the guide records 
       [7, 2],
     ],
   );
-  assert.equal(queue[0].requestedAt, Date.parse("2026-11-18T08:00:00Z"));
+  assert.equal(queue[0]?.requestedAt, Date.parse("2026-11-18T08:00:00Z"));
   const guide = host.data().storage["guide:acme/api#8"] as Record<string, any>;
   assert.equal(guide.pr.requestedAt, "2026-11-18T08:00:00.000Z");
 });
@@ -541,7 +577,7 @@ test("review.submit posts one review with the line comments, then each file comm
   });
   const sent = posts(calls);
   assert.equal(sent.length, 2, "one review, then one file comment");
-  assert.deepEqual(sent[0].args, [
+  assert.deepEqual(sent[0]?.args, [
     "api",
     "-X",
     "POST",
@@ -549,7 +585,7 @@ test("review.submit posts one review with the line comments, then each file comm
     "--input",
     "-",
   ]);
-  assert.deepEqual(JSON.parse(sent[0].options?.input ?? ""), {
+  assert.deepEqual(JSON.parse(sent[0]?.options?.input ?? ""), {
     commit_id: PR_VIEW.headRefOid,
     event: "COMMENT",
     body: "Looks good apart from one thing.",
@@ -557,8 +593,8 @@ test("review.submit posts one review with the line comments, then each file comm
       { path: "src/SessionDataAccess.ts", line: 11, side: "RIGHT", body: "Emit here too?" },
     ],
   });
-  assert.equal(sent[1].args[3], "repos/acme/api/pulls/7/comments");
-  assert.deepEqual(JSON.parse(sent[1].options?.input ?? ""), {
+  assert.equal(sent[1]?.args[3], "repos/acme/api/pulls/7/comments");
+  assert.deepEqual(JSON.parse(sent[1]?.options?.input ?? ""), {
     commit_id: PR_VIEW.headRefOid,
     path: "README.md",
     body: "Mention the event.",
@@ -570,13 +606,13 @@ test("review.submit posts one review with the line comments, then each file comm
 test("the queue row counts the draft's pending comments, from storage too", async () => {
   const { worker, latest } = await readyGuide();
   const key = "acme/api#7";
-  assert.equal(latest()?.queue[0].pendingComments, 0);
+  assert.equal(latest()?.queue[0]?.pendingComments, 0);
   await worker.request("review.save", { key, draft: DRAFT });
-  await until(() => latest()?.queue[0].pendingComments === 2, "the count after a save");
+  await until(() => latest()?.queue[0]?.pendingComments === 2, "the count after a save");
   await worker.request("queue.refresh");
-  assert.equal(latest()?.queue[0].pendingComments, 2, "read back from draft:<key> on a check");
+  assert.equal(latest()?.queue[0]?.pendingComments, 2, "read back from draft:<key> on a check");
   await worker.request("review.submit", { key, event: "COMMENT", body: "Thanks." });
-  await until(() => latest()?.queue[0].pendingComments === 0, "no pending comments once posted");
+  await until(() => latest()?.queue[0]?.pendingComments === 0, "no pending comments once posted");
 });
 
 test("the guide last moved through in a tab is the panel's current row", async () => {
@@ -593,7 +629,7 @@ test("review.submit refuses comments off the diff and posts nothing", async () =
   const { worker, calls, host } = await readyGuide();
   const draft = {
     ...DRAFT,
-    comments: [{ ...DRAFT.comments[0], line: 99 }, DRAFT.comments[1]],
+    comments: [{ ...nth(DRAFT.comments, 0), line: 99 }, nth(DRAFT.comments, 1)],
   };
   await worker.request("review.save", { key: "acme/api#7", draft });
   const result = await worker.request("review.submit", {
@@ -662,8 +698,11 @@ test("diff.get answers one file's diff at the guide's commit, and caches it", as
   ]);
   assert.deepEqual([diff.additions, diff.deletions, diff.truncated], [2, 1, false]);
   const [call] = diffCalls(calls, "src/SessionDataAccess.ts");
-  assert.ok(call.args.includes(`refs/pr-tour/base-7...${PR_VIEW.headRefOid}`), call.args.join(" "));
-  assert.ok(call.args.includes("--literal-pathspecs"));
+  assert.ok(
+    call?.args.includes(`refs/pr-tour/base-7...${PR_VIEW.headRefOid}`),
+    call?.args.join(" "),
+  );
+  assert.ok(call?.args.includes("--literal-pathspecs"));
   await worker.request("diff.get", { key: "acme/api#7", path: "src/SessionDataAccess.ts" });
   assert.equal(
     diffCalls(calls, "src/SessionDataAccess.ts").length,
@@ -675,7 +714,7 @@ test("diff.get answers one file's diff at the guide's commit, and caches it", as
   await worker.request("diff.get", { key: "acme/api#7", path: "src/CustomerService.ts" });
   const [r] = diffCalls(calls, "src/CustomerService.ts");
   assert.deepEqual(
-    r.args.slice(-3),
+    r?.args.slice(-3),
     ["--", "src/Old.ts", "src/CustomerService.ts"],
     "a rename diffs against its old path",
   );
@@ -701,7 +740,8 @@ test("diff.get refuses a commit that is not a commit id", async () => {
 });
 
 test("after the repair round, focus ranges outside the diff are dropped, not fatal", async () => {
-  const [first, second] = AGENT_GUIDE.readingOrder;
+  const first = nth(AGENT_GUIDE.readingOrder, 0);
+  const second = nth(AGENT_GUIDE.readingOrder, 1);
   const sloppy = JSON.stringify({
     ...AGENT_GUIDE,
     readingOrder: [
@@ -721,12 +761,12 @@ test("after the repair round, focus ranges outside the diff are dropped, not fat
   assert.ok(
     calls
       .filter((c) => c.cmd === "claude")[1]
-      .options?.input?.includes("readingOrder[0].focus[0]: lines 400-410 are not in the diff"),
+      ?.options?.input?.includes("readingOrder[0].focus[0]: lines 400-410 are not in the diff"),
   );
   const guide = host.data().storage["guide:acme/api#7"] as Record<string, any>;
   assert.equal(guide.readingOrder[0].focus, undefined, "whole file");
   assert.deepEqual(guide.readingOrder[1].focus, [{ start: 1, end: 1 }]);
-  assert.equal(guide.readingOrder[0].check, first.check);
+  assert.equal(guide.readingOrder[0].check, first?.check);
   assert.ok(
     current?.logs.some((l) => l.includes("kept 0 of 1 focus ranges, shows the whole file")),
   );
@@ -743,8 +783,8 @@ test("tour progress is stored per PR and commit, and shows on the queue row", as
     collapsed: [],
     last: null,
   });
-  assert.equal(latest()?.queue[0].tour, null, "not started");
-  const state = {
+  assert.equal(latest()?.queue[0]?.tour, null, "not started");
+  const state: TourState = {
     commit: PR_VIEW.headRefOid,
     view: "stop:0",
     visited: [0],
@@ -755,14 +795,14 @@ test("tour progress is stored per PR and commit, and shows on the queue row", as
   assert.deepEqual(host.data().storage["tour:acme/api#7"], state);
   assert.deepEqual(await worker.request("tour.get", { key, stops: 4 }), state);
   // Progress counts files: stop 1 holds one of the four guide files, plus two skipped.
-  await until(() => latest()?.queue[0].tour === "1 of 6 files", "the queue row's progress");
+  await until(() => latest()?.queue[0]?.tour === "1 of 6 files", "the queue row's progress");
   await worker.request("tour.save", { key, state: { ...state, view: "stop:3", visited: [0, 3] } });
-  await until(() => latest()?.queue[0].tour === "3 of 6 files", "the skipped files counted");
+  await until(() => latest()?.queue[0]?.tour === "3 of 6 files", "the skipped files counted");
   await worker.request("tour.save", {
     key,
     state: { ...state, view: "wrapup", visited: [0, 1, 2, 3] },
   });
-  await until(() => latest()?.queue[0].tour === "Reviewed tour", "the finished tour");
+  await until(() => latest()?.queue[0]?.tour === "Reviewed tour", "the finished tour");
   // A tab on another commit starts again; progress made there does not count for this guide.
   assert.deepEqual(await worker.request("tour.get", { key, commit: "0000000", stops: 4 }), {
     commit: "0000000",
@@ -775,7 +815,7 @@ test("tour progress is stored per PR and commit, and shows on the queue row", as
     key,
     state: { commit: "0000000", view: "stop:1", visited: [1], collapsed: [], last: 1 },
   });
-  await until(() => latest()?.queue[0].tour === null, "progress from another commit to clear");
+  await until(() => latest()?.queue[0]?.tour === null, "progress from another commit to clear");
   await assert.rejects(worker.request("tour.save", { key, state: { commit: "--x" } as never }));
 });
 
@@ -786,7 +826,7 @@ test("progress on an older guide's commit is not shown after a refresh", async (
   });
   await until(() => latest()?.queue[0]?.status === "ready", "the guide");
   await worker.request("queue.refresh");
-  assert.equal(latest()?.queue[0].tour, null);
+  assert.equal(latest()?.queue[0]?.tour, null);
 });
 
 test("breakdown.get groups the PR's files by kind at the guide's commit, and caches it", async () => {
@@ -805,9 +845,9 @@ test("breakdown.get groups the PR's files by kind at the guide's commit, and cac
     ],
     "package.json in the tree turns the TypeScript preset on; check-attr marks the logo generated",
   );
-  const renamed = b.categories[0].files[0];
-  assert.equal(renamed.oldPath, "src/Old.ts");
-  assert.equal(b.categories.at(-1)?.files[0].binary, true);
+  const renamed = b.categories[0]?.files[0];
+  assert.equal(renamed?.oldPath, "src/Old.ts");
+  assert.equal(b.categories.at(-1)?.files[0]?.binary, true);
   assert.deepEqual([b.additions, b.deletions, b.fileCount], [57, 5, 7]);
   await worker.request("breakdown.get", { key: "acme/api#7" });
   const git = (word: string) =>
@@ -819,11 +859,11 @@ test("breakdown.get groups the PR's files by kind at the guide's commit, and cac
   );
   assert.equal(git("ls-tree").length, 1);
   const range = `refs/pr-tour/base-7...${PR_VIEW.headRefOid}`;
-  assert.ok(git("--numstat")[0].args.includes(range));
-  assert.ok(git("ls-tree")[0].args.includes(PR_VIEW.headRefOid));
-  assert.ok(git("check-attr")[0].args.includes(`--source=${PR_VIEW.headRefOid}`));
+  assert.ok(git("--numstat")[0]?.args.includes(range));
+  assert.ok(git("ls-tree")[0]?.args.includes(PR_VIEW.headRefOid));
+  assert.ok(git("check-attr")[0]?.args.includes(`--source=${PR_VIEW.headRefOid}`));
   assert.equal(
-    git("check-attr")[0].options?.input?.split("\0").length,
+    git("check-attr")[0]?.options?.input?.split("\0").length,
     8,
     "seven paths, NUL-ended",
   );
@@ -880,7 +920,7 @@ test("the tour covers every file: skipped files are stored, coverage is repaired
   await until(() => all()[0]?.status === "ready", "the enforced guide");
   const runs = calls.filter((c) => c.cmd === "claude");
   assert.equal(runs.length, 2, "one repair round first");
-  const prompt = runs[0].options?.input ?? "";
+  const prompt = runs[0]?.options?.input ?? "";
   assert.ok(
     prompt.includes(
       "<skipped_by_design>\nassets/logo.png  (generated)\npnpm-lock.yaml  (lockfile)\n</skipped_by_design>",
@@ -889,7 +929,7 @@ test("the tour covers every file: skipped files are stored, coverage is repaired
   assert.ok(
     prompt.includes("<must_be_deep>\nsrc/CustomerService.ts  (contract file)\n</must_be_deep>"),
   );
-  const repair = runs[1].options?.input ?? "";
+  const repair = runs[1]?.options?.input ?? "";
   for (const problem of [
     '"pnpm-lock.yaml" is skipped by design (lockfile)',
     '"src/CustomerService.ts" is a contract file; give it a deep stop of its own',
@@ -920,14 +960,21 @@ test("skipped.get answers a guide's skipped files, from git for a guide stored w
   // Written before guides stored their skipped files, with an old single-file stop.
   const older = {
     schema: "prguide/v2",
-    pr: { repo: "acme/api", number: 7, commit: PR_VIEW.headRefOid, baseRef: "main", headRef: "f" },
+    title: "Record session end reasons",
+    pr: { ...STORED_PR, headRef: "f", requestedAt: null, hasDescription: true },
     risk: { level: "low", headline: "x", beforeMerge: [] },
+    summary: { what: { headline: "w" }, why: { headline: "y" }, impact: { headline: "i" } },
     readingOrder: [{ file: "src/SessionDataAccess.ts", areaId: "runtime", headline: "h" }],
     files: [],
     findings: [],
     areas: [],
+    flows: [],
+    claimsCheck: [],
+    sinceLastReview: null,
+    coverage: null,
     commentable: { "src/SessionDataAccess.ts": [], "README.md": [] },
     generatedBy: { harness: "claude", model: null, at: new Date().toISOString() },
+    reviewRequest: "user",
   };
   const { worker, latest } = await setup([], {
     "guide:acme/api#7": older,
@@ -941,6 +988,29 @@ test("skipped.get answers a guide's skipped files, from git for a guide stored w
   ]);
   // The queue counts the old stop, README.md in "Other changes", and the two skipped files.
   const row = [...(latest()?.queue ?? []), ...(latest()?.notQueued ?? [])][0];
-  assert.equal(row.tour, "1 of 4 files");
+  assert.equal(row?.tour, "1 of 4 files");
   await assert.rejects(worker.request("skipped.get", { key, commit: "HEAD~1" }));
+});
+
+test("a run counts against the daily limit by how it was started, not by what else is running", async () => {
+  let release = () => {};
+  const agentGate = new Promise<void>((resolve) => (release = resolve));
+  const { host, worker, latest, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    {},
+    undefined,
+    { numbers: [7, 8], agentGate },
+  );
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  // Generate by hand for #7; while its agent run is held, turning the repo on queues #8 automatically.
+  await worker.request("guide.generate", { key: "acme/api#7" });
+  await worker.request("repo.setOptIn", { repo: "acme/api", optIn: true });
+  release();
+  await until(() => all().length === 2 && all().every((i) => i.status === "ready"), "both guides");
+  assert.deepEqual(
+    host.data().storage.runs,
+    { day: localDay(), count: 1 },
+    "only the automatic run for #8 is counted",
+  );
+  assert.equal(host.callsOf("notifications.show").length, 1, "and only it notifies");
 });

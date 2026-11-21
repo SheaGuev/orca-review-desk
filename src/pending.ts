@@ -18,7 +18,7 @@ export function pendingByStop(
   const counts = stops.map(() => 0);
   for (const c of comments) {
     const at = stopForComment(stops, c);
-    if (at !== null) counts[at]++;
+    if (at !== null) counts[at] = (counts[at] ?? 0) + 1;
   }
   return counts;
 }

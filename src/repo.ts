@@ -6,35 +6,55 @@ export function repoSlugFromRemote(url: string): string | null {
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
 }
 
-/** `owner/repo` (lowercase) from a search result's `repository_url`. */
+/** `owner/repo` (lowercase) from a search result's `repository_url`, or "" when it names none. */
 export function repoSlugFromApiUrl(url: string): string {
-  const parts = url.split("/");
-  return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`.toLowerCase();
+  const [name, owner] = url.split("/").reverse();
+  return owner && name ? `${owner}/${name}`.toLowerCase() : "";
 }
 
-const LOCKFILES = new Set([
-  "pnpm-lock.yaml",
-  "package-lock.json",
-  "npm-shrinkwrap.json",
-  "yarn.lock",
-  "bun.lock",
-  "bun.lockb",
-  "cargo.lock",
-  "gemfile.lock",
-  "poetry.lock",
-  "uv.lock",
-  "pipfile.lock",
-  "go.sum",
-  "composer.lock",
-  "podfile.lock",
-  "flake.lock",
-  "mix.lock",
-  "pubspec.lock",
-  "package.resolved",
+/** Lockfile names, lowercase, each with the manifest it is written from. */
+const LOCKFILE_SOURCE: ReadonlyMap<string, string> = new Map([
+  ["pnpm-lock.yaml", "package.json"],
+  ["package-lock.json", "package.json"],
+  ["npm-shrinkwrap.json", "package.json"],
+  ["yarn.lock", "package.json"],
+  ["bun.lock", "package.json"],
+  ["bun.lockb", "package.json"],
+  ["cargo.lock", "Cargo.toml"],
+  ["gemfile.lock", "Gemfile"],
+  ["poetry.lock", "pyproject.toml"],
+  ["uv.lock", "pyproject.toml"],
+  ["pipfile.lock", "Pipfile"],
+  ["go.sum", "go.mod"],
+  ["composer.lock", "composer.json"],
+  ["podfile.lock", "Podfile"],
+  ["flake.lock", "flake.nix"],
+  ["mix.lock", "mix.exs"],
+  ["pubspec.lock", "pubspec.yaml"],
+  ["package.resolved", "Package.swift"],
 ]);
 
+/** Lockfile names, lowercase; matched without regard to case. */
+export const LOCKFILES: ReadonlySet<string> = new Set(LOCKFILE_SOURCE.keys());
+
+const baseOf = (path: string): string => path.split("/").pop() ?? "";
+const dirOf = (path: string): string => path.slice(0, path.length - baseOf(path).length);
+
+/**
+ * The changed manifest a lockfile is written from, so its change can be reviewed there: the one
+ * in the lockfile's own folder, else any changed manifest of its kind (a workspace's root lockfile
+ * follows its packages' manifests). Null for a file that is not a lockfile, or when no manifest of
+ * its kind changed.
+ */
+export function lockfileSource(path: string, changed: readonly string[]): string | null {
+  const manifest = LOCKFILE_SOURCE.get(baseOf(path).toLowerCase());
+  if (!manifest) return null;
+  const candidates = changed.filter((f) => baseOf(f) === manifest);
+  return candidates.find((f) => dirOf(f) === dirOf(path)) ?? candidates[0] ?? null;
+}
+
 export function isLockfile(path: string): boolean {
-  return LOCKFILES.has((path.split("/").pop() ?? "").toLowerCase());
+  return LOCKFILES.has(baseOf(path).toLowerCase());
 }
 
 /** True when every changed file is a lockfile, so there is nothing for an agent to explain. */
@@ -52,7 +72,7 @@ function globToRegExp(raw: string): RegExp {
   if (dirOnly) pattern = pattern.slice(0, -1);
   let body = "";
   for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
+    const c = pattern[i] ?? "";
     if (c === "*" && pattern[i + 1] === "*") {
       // `**/` matches any number of folders, a trailing `**` matches everything below
       if (pattern[i + 2] === "/") {
@@ -109,4 +129,16 @@ export function parseTeams(value: unknown): string[] {
     .split(/[,\s]+/)
     .map((t) => t.trim().replace(/^@/, ""))
     .filter((t) => /^[\w.-]+\/[\w.-]+$/.test(t));
+}
+
+/** `owner/repo#7`: how the worker, the panel and the guide tab name a PR. */
+export const prKey = (repo: string, number: number): string => `${repo}#${number}`;
+
+/** The repo and number a PR key names; null when it is not one. */
+export function parsePrKey(key: string): { repo: string; number: number } | null {
+  const at = key.lastIndexOf("#");
+  const number = Number(key.slice(at + 1));
+  return at > 0 && Number.isInteger(number) && number > 0
+    ? { repo: key.slice(0, at), number }
+    : null;
 }

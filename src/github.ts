@@ -1,5 +1,6 @@
 // What the worker asks GitHub, all through the person's own `gh` sign-in.
 import { runOk } from "./exec";
+import { asList, asNumber, asObj, asString, isObj, parseJson } from "./json";
 import { repoSlugFromApiUrl } from "./repo";
 
 export type SearchHit = {
@@ -83,24 +84,23 @@ export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
     ],
     { timeoutMs: 30_000 },
   );
-  const items = (JSON.parse(out).items ?? []) as {
-    number: number;
-    title: string;
-    html_url: string;
-    draft?: boolean;
-    updated_at: string;
-    user?: { login?: string };
-    repository_url: string;
-  }[];
-  return items.map((i) => ({
-    repo: repoSlugFromApiUrl(i.repository_url),
-    number: i.number,
-    title: i.title,
-    author: i.user?.login ?? "",
-    url: i.html_url,
-    draft: Boolean(i.draft),
-    updatedAt: i.updated_at,
-  }));
+  return asList(asObj(parseJson(out)).items).flatMap((item): SearchHit[] => {
+    // A hit without a number or a repository is no PR the queue could show.
+    if (!isObj(item) || typeof item.number !== "number") return [];
+    const repo = repoSlugFromApiUrl(asString(item.repository_url));
+    if (!repo) return [];
+    return [
+      {
+        repo,
+        number: item.number,
+        title: asString(item.title),
+        author: asString(asObj(item.user).login),
+        url: asString(item.html_url),
+        draft: item.draft === true,
+        updatedAt: asString(item.updated_at),
+      },
+    ];
+  });
 }
 
 const DETAIL_FIELDS =
@@ -110,26 +110,38 @@ export async function prDetails(repo: string, ref: string | number): Promise<PrD
   const out = await runOk("gh", ["pr", "view", String(ref), "-R", repo, "--json", DETAIL_FIELDS], {
     timeoutMs: 30_000,
   });
-  const raw = JSON.parse(out);
+  return prDetailsFrom(parseJson(out), `${repo} ${ref}`);
+}
+
+/** `gh pr view --json` output as PrDetails; throws when it lacks what every later step needs. */
+export function prDetailsFrom(raw: unknown, what: string): PrDetails {
+  if (
+    !isObj(raw) ||
+    typeof raw.number !== "number" ||
+    typeof raw.headRefOid !== "string" ||
+    typeof raw.headRefName !== "string" ||
+    typeof raw.baseRefName !== "string"
+  )
+    throw new Error(`gh pr view ${what}: the reply has no number, head or base`);
   return {
     number: raw.number,
-    title: raw.title,
-    body: raw.body ?? "",
-    author: raw.author?.login ?? "",
-    url: raw.url,
+    title: asString(raw.title),
+    body: asString(raw.body),
+    author: asString(asObj(raw.author).login),
+    url: asString(raw.url),
     headRefOid: raw.headRefOid,
     headRefName: raw.headRefName,
     baseRefName: raw.baseRefName,
-    isDraft: Boolean(raw.isDraft),
-    additions: raw.additions ?? 0,
-    deletions: raw.deletions ?? 0,
-    changedFiles: raw.changedFiles ?? 0,
-    createdAt: raw.createdAt ?? "",
-    files: ((raw.files ?? []) as PrFile[]).map((f) => ({
-      path: f.path,
-      additions: f.additions ?? 0,
-      deletions: f.deletions ?? 0,
-    })),
+    isDraft: raw.isDraft === true,
+    additions: asNumber(raw.additions),
+    deletions: asNumber(raw.deletions),
+    changedFiles: asNumber(raw.changedFiles),
+    createdAt: asString(raw.createdAt),
+    files: asList(raw.files).flatMap((f): PrFile[] =>
+      isObj(f) && typeof f.path === "string"
+        ? [{ path: f.path, additions: asNumber(f.additions), deletions: asNumber(f.deletions) }]
+        : [],
+    ),
   };
 }
 
@@ -150,44 +162,64 @@ export async function myReviewComments(repo: string, number: number): Promise<Re
   return out
     .split("\n")
     .filter((l) => l.trim())
-    .map((l) => JSON.parse(l) as ReviewComment);
+    .flatMap((l): ReviewComment[] => {
+      const c = parseJson(l);
+      if (!isObj(c) || typeof c.id !== "number" || typeof c.path !== "string") return [];
+      return [
+        {
+          id: c.id,
+          path: c.path,
+          line: typeof c.line === "number" ? c.line : null,
+          body: asString(c.body),
+        },
+      ];
+    });
 }
 
-type TimelineNode = {
-  __typename?: string;
-  createdAt?: string;
-  requestedReviewer?: { __typename?: string; login?: string; slug?: string } | null;
+/** One timeline event as the queue reads it: its kind, when, and who was asked. */
+type TimelineNode = { kind: string; at: number | null; login: string; slug: string };
+
+const timeOf = (v: unknown): number | null => {
+  const t = typeof v === "string" ? Date.parse(v) : Number.NaN;
+  return Number.isFinite(t) ? t : null;
 };
-type PrTimeline = { createdAt?: string; timelineItems?: { nodes?: (TimelineNode | null)[] } };
+
+function timelineNodes(pr: Record<string, unknown>): TimelineNode[] {
+  return asList(asObj(pr.timelineItems).nodes).flatMap((n): TimelineNode[] => {
+    if (!isObj(n)) return [];
+    const reviewer = asObj(n.requestedReviewer);
+    return [
+      {
+        kind: asString(n.__typename),
+        at: timeOf(n.createdAt),
+        login: asString(reviewer.login).toLowerCase(),
+        slug: asString(reviewer.slug).toLowerCase(),
+      },
+    ];
+  });
+}
+
+const latest = (nodes: readonly TimelineNode[]): number | null =>
+  nodes.reduce<number | null>(
+    (best, n) => (n.at !== null && (best === null || n.at > best) ? n.at : best),
+    null,
+  );
 
 /**
  * When your review was asked for: the latest request naming you or one of your teams, else the
  * latest ready-for-review, else when the PR was opened. Milliseconds, or null when unknown.
  */
-export function requestedAtFrom(
-  pr: PrTimeline | null | undefined,
-  me: string,
-  teams: readonly string[],
-): number | null {
-  if (!pr) return null;
+export function requestedAtFrom(pr: unknown, me: string, teams: readonly string[]): number | null {
+  if (!isObj(pr)) return null;
   const slugs = new Set(teams.map((t) => (t.split("/").pop() ?? t).toLowerCase()));
-  const nodes = (pr.timelineItems?.nodes ?? []).filter((n): n is TimelineNode => Boolean(n));
-  const latest = (list: TimelineNode[]) =>
-    list.reduce<number | null>((best, n) => {
-      const t = n.createdAt ? Date.parse(n.createdAt) : NaN;
-      return Number.isFinite(t) && (best === null || t > best) ? t : best;
-    }, null);
-  const mine = nodes.filter((n) => {
-    if (n.__typename !== "ReviewRequestedEvent") return false;
-    const r = n.requestedReviewer;
-    return (
-      (r?.login && r.login.toLowerCase() === me.toLowerCase()) ||
-      (r?.slug && slugs.has(r.slug.toLowerCase()))
-    );
-  });
-  const ready = nodes.filter((n) => n.__typename === "ReadyForReviewEvent");
-  const created = pr.createdAt ? Date.parse(pr.createdAt) : NaN;
-  return latest(mine) ?? latest(ready) ?? (Number.isFinite(created) ? created : null);
+  const nodes = timelineNodes(pr);
+  const mine = nodes.filter(
+    (n) =>
+      n.kind === "ReviewRequestedEvent" &&
+      ((n.login !== "" && n.login === me.toLowerCase()) || (n.slug !== "" && slugs.has(n.slug))),
+  );
+  const ready = nodes.filter((n) => n.kind === "ReadyForReviewEvent");
+  return latest(mine) ?? latest(ready) ?? timeOf(pr.createdAt);
 }
 
 /** One GraphQL query per repository, an alias per PR, for review-request times. */
@@ -198,7 +230,7 @@ export async function requestTimes(
 ): Promise<Map<number, number>> {
   const out = new Map<number, number>();
   if (!numbers.length) return out;
-  const [owner, name] = repo.split("/");
+  const [owner = "", name = ""] = repo.split("/");
   const fields = numbers
     .map(
       (n) => `pr${n}: pullRequest(number: ${n}) {
@@ -219,7 +251,7 @@ export async function requestTimes(
     ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`],
     { timeoutMs: 30_000 },
   );
-  const repository = (JSON.parse(raw)?.data?.repository ?? {}) as Record<string, PrTimeline>;
+  const repository = asObj(asObj(asObj(parseJson(raw)).data).repository);
   const me = await currentLogin();
   for (const n of numbers) {
     const at = requestedAtFrom(repository[`pr${n}`], me, teams);

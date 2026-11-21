@@ -1,7 +1,8 @@
 // A review drafted in the guide tab, and what GitHub is sent when it is posted. Pure: the worker
 // does the posting, the editor and the tests share the rules.
 
-import { SEVERITIES, type Finding } from "./schema";
+import { isObj } from "./json";
+import { DEEP_SEVERITIES, type Finding } from "./schema";
 
 export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 export const REVIEW_EVENTS: readonly ReviewEvent[] = ["APPROVE", "REQUEST_CHANGES", "COMMENT"];
@@ -34,9 +35,6 @@ export const emptyDraft = (commitId: string): Draft => ({
   comments: [],
   dismissedFindings: [],
 });
-
-const isObj = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** A draft from storage or the frame, with anything malformed dropped rather than trusted. */
 export function asDraft(value: unknown, fallbackCommit: string): Draft {
@@ -170,12 +168,12 @@ export function reviewPayload(
     event,
     body: body.trim(),
     comments: draft.comments
-      .filter((c) => c.line !== null)
+      .filter((c): c is DraftComment & { line: number } => c.line !== null)
       .map((c) => ({
         path: c.path,
-        line: c.line as number,
+        line: c.line,
         side: "RIGHT" as const,
-        ...(c.startLine !== undefined && c.startLine < (c.line as number)
+        ...(c.startLine !== undefined && c.startLine < c.line
           ? { start_line: c.startLine, start_side: "RIGHT" as const }
           : {}),
         body: c.body.trim(),
@@ -203,27 +201,42 @@ export function fileCommentPayloads(
     }));
 }
 
+/** "One thing" / "3 things": a count in words that read well at the start of a sentence too. */
+const count = (n: number, one: string, many: string): string => (n === 1 ? one : `${n} ${many}`);
+
 /**
- * A starting summary for the review, from the findings the reviewer added to it: one line each,
- * most severe first, so the summary matches the comments it posts with. Empty when no finding was
- * added; the reviewer edits it before anything is posted.
+ * A starting summary for the review: its shape, from the findings the reviewer added. How many
+ * must be fixed before merging (blocker, major) and how many are smaller (minor, nit), then a
+ * pointer to the comments. Never their text: each one is already a line or file comment, and
+ * GitHub shows the summary right above them. Empty when no finding was added; the reviewer
+ * edits it before anything is posted.
  */
 export function suggestedSummary(draft: Draft, findings: readonly Finding[]): string {
-  const added = new Set(
-    draft.comments
-      .filter((c) => c.source !== "manual")
-      .map((c) => c.source.slice("finding:".length)),
-  );
-  const used = findings
-    .filter((f) => added.has(f.id))
-    .sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
+  const added = new Set(draft.comments.map((c) => c.source));
+  const used = findings.filter((f) => added.has(`finding:${f.id}`));
   if (!used.length) return "";
-  const head =
-    used.length === 1
-      ? "One thing to look at before this merges:"
-      : "A few things to look at before this merges:";
-  return [
-    head,
-    ...used.map((f) => `- ${f.headline} (\`${f.file}${f.line ? `:${f.line}` : ""}\`)`),
-  ].join("\n");
+  const must = used.filter((f) => DEEP_SEVERITIES.includes(f.severity)).length;
+  const small = used.length - must;
+  const fix = count(must, "One thing", "things") + " to fix before this merges";
+  const rest = count(small, "one smaller suggestion", "smaller suggestions");
+  const shape = !must
+    ? `${rest.charAt(0).toUpperCase()}${rest.slice(1)}, nothing blocking.`
+    : small
+      ? `${fix}, and ${rest}.`
+      : `${fix}.`;
+  return `${shape} Details are in the comments.`;
+}
+
+/**
+ * The blocker and major findings the reviewer has not acted on: no comment from them in the
+ * review and not dismissed. What the wrap-up asks about before anything is posted.
+ */
+export function openFindings(draft: Draft, findings: readonly Finding[]): Finding[] {
+  const added = new Set(draft.comments.map((c) => c.source));
+  return findings.filter(
+    (f) =>
+      DEEP_SEVERITIES.includes(f.severity) &&
+      !added.has(`finding:${f.id}`) &&
+      !draft.dismissedFindings.includes(f.id),
+  );
 }

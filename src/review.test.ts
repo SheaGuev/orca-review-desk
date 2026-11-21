@@ -3,6 +3,7 @@ import {
   asDraft,
   commentPlace,
   emptyDraft,
+  openFindings,
   fileCommentPayloads,
   reviewPayload,
   rangeProblem,
@@ -11,7 +12,7 @@ import {
   suggestedSummary,
   type Draft,
 } from "./review";
-import { AGENT_GUIDE } from "./fixtures";
+import { AGENT_GUIDE, nth } from "./fixtures";
 
 const draft: Draft = {
   commitId: "c0",
@@ -74,7 +75,7 @@ test("refuses what GitHub would refuse, before sending", () => {
   assert.equal(reviewProblem(draft, "COMMENT", "", false), null);
   assert.equal(
     reviewProblem(
-      { ...draft, comments: [{ ...draft.comments[0], body: "  " }] },
+      { ...draft, comments: [{ ...nth(draft.comments, 0), body: "  " }] },
       "COMMENT",
       "x",
       true,
@@ -92,7 +93,7 @@ test("a draft from storage keeps only well-formed comments", () => {
       { id: "x", path: "", line: 1, body: "no path", source: "manual" },
       { id: "y", path: "a", line: 0, body: "bad line", source: "manual" },
       { id: "z", path: "a", line: 2, body: "bad source", source: "robot" },
-      { ...draft.comments[1], extra: true },
+      { ...nth(draft.comments, 1), extra: true },
     ],
     dismissedFindings: ["f1", 3],
   };
@@ -101,40 +102,37 @@ test("a draft from storage keeps only well-formed comments", () => {
     d.comments.map((c) => c.id),
     ["a", "b"],
   );
-  assert.equal("extra" in d.comments[1], false);
+  assert.equal("extra" in nth(d.comments, 1), false);
   assert.deepEqual(d.dismissedFindings, ["f1"]);
   assert.deepEqual(asDraft(null, "h"), emptyDraft("h"));
 });
 
-test("the suggested summary lists the findings added to the review, most severe first", () => {
+test("the suggested summary gives the review's shape, never the comments' own text", () => {
+  const major = nth(AGENT_GUIDE.findings, 0);
+  const nit = nth(AGENT_GUIDE.findings, 1);
   const findings = [
-    {
-      ...AGENT_GUIDE.findings[1],
-      id: "f2",
-      file: "src/a.ts",
-      line: null,
-      headline: "Split this file.",
-    },
-    { ...AGENT_GUIDE.findings[0], id: "f1", file: "src/b.ts", line: 40, headline: "Off by one." },
-    { ...AGENT_GUIDE.findings[0], id: "f3", headline: "Not added." },
+    { ...nit, id: "f2", headline: "Split this file." },
+    { ...major, id: "f1", headline: "Off by one." },
+    { ...major, id: "f3", headline: "Not added." },
   ];
+  const summary = suggestedSummary(draft, findings);
   assert.equal(
-    suggestedSummary(draft, findings),
-    [
-      "A few things to look at before this merges:",
-      "- Off by one. (`src/b.ts:40`)",
-      "- Split this file. (`src/a.ts`)",
-    ].join("\n"),
+    summary,
+    "One thing to fix before this merges, and one smaller suggestion. Details are in the comments.",
+  );
+  assert.ok(!summary.includes("Off by one"), "headlines stay in their line comments");
+  assert.equal(
+    suggestedSummary({ ...draft, comments: draft.comments.slice(2) }, findings),
+    "One thing to fix before this merges. Details are in the comments.",
+  );
+  assert.equal(
+    suggestedSummary({ ...draft, comments: draft.comments.slice(1, 2) }, findings),
+    "One smaller suggestion, nothing blocking. Details are in the comments.",
   );
   assert.equal(
     suggestedSummary({ ...draft, comments: draft.comments.slice(0, 1) }, findings),
     "",
     "manual comments alone suggest nothing",
-  );
-  assert.ok(
-    suggestedSummary({ ...draft, comments: draft.comments.slice(2) }, findings).startsWith(
-      "One thing",
-    ),
   );
 });
 
@@ -184,8 +182,8 @@ test("a range comment posts start_line and start_side; a one-line comment does n
     },
     { path: "src/a.ts", line: 31, side: "RIGHT", body: "This one." },
   ]);
-  assert.equal(commentPlace(ranged.comments[0]), "lines 11–14");
-  assert.equal(commentPlace(ranged.comments[1]), "line 31");
+  assert.equal(commentPlace(nth(ranged.comments, 0)), "lines 11–14");
+  assert.equal(commentPlace(nth(ranged.comments, 1)), "line 31");
   assert.equal(commentPlace({ line: null }), "the whole file");
 });
 
@@ -202,13 +200,13 @@ test("a range that spans hunks after the PR moved is stale; a stored range is ke
     ["split"],
   );
   const stored = asDraft(JSON.parse(JSON.stringify(d)), "c0");
-  assert.equal(stored.comments[0].startLine, 10);
+  assert.equal(stored.comments[0]?.startLine, 10);
   const bad = asDraft(
     {
       ...d,
       comments: [
-        { ...d.comments[0], startLine: 13, line: 10 },
-        { ...d.comments[0], id: "f", line: null },
+        { ...nth(d.comments, 0), startLine: 13, line: 10 },
+        { ...nth(d.comments, 0), id: "f", line: null },
       ],
     },
     "c0",
@@ -218,5 +216,29 @@ test("a range that spans hunks after the PR moved is stale; a stored range is ke
     [],
     "a start after its end, or on a whole-file comment, is refused",
   );
-  assert.equal("startLine" in asDraft(draft, "c0").comments[0], false, "no undefined field");
+  assert.equal("startLine" in nth(asDraft(draft, "c0").comments), false, "no undefined field");
+});
+
+test("serious findings stay open until their comment is added or they are dismissed", () => {
+  const base = nth(AGENT_GUIDE.findings, 0);
+  const findings = [
+    { ...base, id: "b", severity: "blocker" as const },
+    { ...base, id: "m1", severity: "major" as const },
+    { ...base, id: "m2", severity: "major" as const },
+    { ...base, id: "n", severity: "nit" as const },
+  ];
+  const d: Draft = {
+    ...emptyDraft("h"),
+    comments: [{ id: "c", path: base.file, line: null, body: "x", source: "finding:m1" }],
+    dismissedFindings: ["m2"],
+  };
+  assert.deepEqual(
+    openFindings(d, findings).map((f) => f.id),
+    ["b"],
+    "minor and nit findings are never in the list",
+  );
+  assert.deepEqual(
+    openFindings(emptyDraft("h"), findings).map((f) => f.id),
+    ["b", "m1", "m2"],
+  );
 });

@@ -70,8 +70,8 @@ test("splits a diff into files, following renames and leaving lockfiles out", ()
       ["gone.ts", null, false, 0, 2],
     ],
   );
-  assert.ok(files[0].text.startsWith("diff --git a/src/a.ts"));
-  assert.ok(!files[0].text.includes("new/name.ts"), "each file carries only its own text");
+  assert.ok(files[0]?.text.startsWith("diff --git a/src/a.ts"));
+  assert.ok(!files[0]?.text.includes("new/name.ts"), "each file carries only its own text");
 });
 
 test("commentable lines are added and context lines on the PR-head side", () => {

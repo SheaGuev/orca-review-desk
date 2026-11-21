@@ -25,7 +25,7 @@ export function globToRegExp(glob: string): RegExp {
 function translate(pattern: string): string {
   let out = "";
   for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
+    const ch = pattern[i] ?? "";
     if (ch === "*" && pattern[i + 1] === "*") {
       const slashAfter = pattern[i + 2] === "/";
       out += slashAfter ? "(?:.*/)?" : ".*";

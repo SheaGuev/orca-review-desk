@@ -1,6 +1,14 @@
 import { assert, test } from "orca/testing";
+import { nth } from "./fixtures";
 import { splitDiff } from "./diff";
-import { diffRows, fileDiffView, focusPieces, gutterDigits, rowOfLine } from "./diff-model";
+import {
+  diffRows,
+  fileDiffView,
+  focusPieces,
+  gutterDigits,
+  rowOfLine,
+  wordChanges,
+} from "./diff-model";
 
 const DIFF = [
   "diff --git a/src/a.ts b/src/a.ts",
@@ -85,8 +93,8 @@ test("keeps the no-newline marker as its own row, not a line", () => {
 
 test("finds the row for a PR-head line, never a deleted one", () => {
   const rows = diffRows(fileDiffView(file("src/a.ts"), "src/a.ts", "abc").lines);
-  assert.equal(rows[rowOfLine(rows, 3)].kind, "add");
-  assert.equal(rows[rowOfLine(rows, 22)].kind, "ctx");
+  assert.equal(rows[rowOfLine(rows, 3)]?.kind, "add");
+  assert.equal(rows[rowOfLine(rows, 22)]?.kind, "ctx");
   assert.equal(rowOfLine(rows, 99), -1);
 });
 
@@ -126,7 +134,7 @@ test("cuts long diffs at a line boundary and says so", () => {
     ...Array.from({ length: 500 }, (_, i) => `+line ${i}\t"quoted"`),
     "",
   ].join("\n");
-  const [f] = splitDiff(big);
+  const f = nth(splitDiff(big));
   const byLines = fileDiffView(f, "big.ts", "abc", { lines: 100 });
   assert.equal(byLines.lines.length, 100);
   assert.equal(byLines.totalLines, 501);
@@ -135,7 +143,7 @@ test("cuts long diffs at a line boundary and says so", () => {
   assert.ok(byChars.truncated);
   assert.ok(JSON.stringify(byChars.lines).length <= 1_000 + 2);
   const rows = diffRows(byChars.lines);
-  assert.equal(rows[rows.length - 1].kind, "add", "a cut diff still numbers what it has");
+  assert.equal(rows[rows.length - 1]?.kind, "add", "a cut diff still numbers what it has");
 });
 
 /** Two hunks, far apart: lines 1-12 (a change at 6-7) and 40-47 (a change at 44). */
@@ -168,11 +176,11 @@ const TWO_HUNKS = [
 
 const lineOf = (rows: ReturnType<typeof diffRows>, i: number) => {
   const r = rows[i];
-  return r.kind === "hunk"
+  return r?.kind === "hunk"
     ? "hunk"
-    : r.kind === "eof"
+    : r?.kind === "eof"
       ? "eof"
-      : `${r.kind}:${r.old ?? ""}/${r.new ?? ""}`;
+      : `${r?.kind}:${r?.old ?? ""}/${r?.new ?? ""}`;
 };
 
 test("a focus range shows its lines, what they replaced and two lines of context", () => {
@@ -187,7 +195,7 @@ test("a focus range shows its lines, what they replaced and two lines of context
   // Lines 1-3 hidden (with the hunk header), 4-5 context, -old6, +6, +7, 8-9 context shown.
   assert.deepEqual(lead, { kind: "gap", from: 0, to: 4, lines: 3 });
   assert.deepEqual(
-    rows.slice(shown.from, shown.to).map((_, i) => lineOf(rows, shown.from + i)),
+    rows.slice(shown?.from, shown?.to).map((_, i) => lineOf(rows, (shown?.from ?? 0) + i)),
     ["ctx:4/4", "ctx:5/5", "del:6/", "add:/6", "add:/7", "ctx:7/8", "ctx:8/9"],
   );
   // The rest of hunk one and all of hunk two: 3 + 9 code lines, the second header included.
@@ -209,7 +217,7 @@ test("ranges in two hunks show both with a gap between; a hunk header shows when
       ["gap", 23, 24, 1], // 47
     ],
   );
-  assert.equal(rows[0].kind, "hunk");
+  assert.equal(rows[0]?.kind, "hunk");
   assert.equal(lineOf(rows, 22), "ctx:45/46");
 });
 
@@ -233,5 +241,31 @@ test("overlapping ranges and a range touching the end merge into one run", () =>
     pieces.map((p) => p.kind),
     ["gap", "show"],
   );
-  assert.equal(pieces[1].to, rows.length);
+  assert.equal(pieces[1]?.to, rows.length);
+});
+
+test("a changed line pair marks only the words that changed", () => {
+  const rows = diffRows([
+    "@@ -1,3 +1,3 @@",
+    ' "ring-1 bg-card rounded-2xl py-6 text-sm"',
+    '-"ring-1 bg-card rounded-2xl py-6 text-sm"',
+    '+"bg-card border py-6 text-sm"',
+  ]);
+  const marks = wordChanges(rows);
+  const del = nth(rows, 2).text;
+  const add = nth(rows, 3).text;
+  assert.deepEqual(
+    (marks.get(2) ?? []).map(([a, b]) => del.slice(a, b)),
+    ["ring-1", "rounded-2xl"],
+  );
+  assert.deepEqual(
+    (marks.get(3) ?? []).map(([a, b]) => add.slice(a, b)),
+    ["border"],
+  );
+  assert.equal(marks.has(1), false, "context lines are never marked");
+});
+
+test("lines with nothing in common, or with no partner, get no word marks", () => {
+  const rows = diffRows(["@@ -1,2 +1,3 @@", "-alpha beta", "+gamma delta", "+extra line"]);
+  assert.equal(wordChanges(rows).size, 0);
 });

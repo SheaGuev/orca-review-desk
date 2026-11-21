@@ -17,11 +17,15 @@ export function fileIcon(fileName: string): IconName {
   const name = fileName.toLowerCase();
   for (const [pattern, icon] of OUR_NAMES) if (pattern.test(name)) return icon;
   // hasOwn, so a file named "constructor" doesn't find Object.prototype's.
-  if (Object.hasOwn(FILE_NAMES, name)) return FILE_NAMES[name];
+  const byName = Object.hasOwn(FILE_NAMES, name) ? FILE_NAMES[name] : undefined;
+  if (byName) return byName;
   const parts = name.split(".");
   for (let i = 1; i < parts.length; i++) {
     const extension = parts.slice(i).join(".");
-    if (Object.hasOwn(FILE_EXTENSIONS, extension)) return FILE_EXTENSIONS[extension];
+    const byExtension = Object.hasOwn(FILE_EXTENSIONS, extension)
+      ? FILE_EXTENSIONS[extension]
+      : undefined;
+    if (byExtension) return byExtension;
   }
   return "_file";
 }

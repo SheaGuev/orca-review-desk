@@ -32,6 +32,10 @@ export function repoLabels(repos: readonly string[]): Map<string, string> {
   );
 }
 
+/** A request that gets a guide automatically, or already has one. */
+const inQueue = (i: QueueItem): boolean =>
+  i.manualReason === null || i.risk !== null || i.status === "ready" || i.status === "stale";
+
 export type Grouped = { queue: QueueItem[]; notQueued: QueueItem[]; authored: QueueItem[] };
 
 /**
@@ -42,8 +46,6 @@ export function buildQueue(items: readonly QueueItem[]): Grouped {
   const labels = repoLabels([...new Set(items.map((i) => i.repo))]);
   const labelled = items.map((i) => ({ ...i, repoLabel: labels.get(i.repo) ?? i.repo }));
   const requests = labelled.filter((i) => i.lane !== "authored");
-  const inQueue = (i: QueueItem) =>
-    i.manualReason === null || i.risk !== null || i.status === "ready" || i.status === "stale";
   const queue = requests
     .filter(inQueue)
     .sort(compareQueue)

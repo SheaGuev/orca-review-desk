@@ -24,34 +24,36 @@ import {
   type Tone,
 } from "orca";
 import { failureReason } from "./failure";
+import { message } from "./errors";
 import type { QueueItem, QueueState, RepoState } from "./protocol";
+import { RISK_WORD, type RiskLevel } from "./schema";
 
 const queue = atom<QueueState | null>(null);
 const failure = atom<string | null>(null);
 
-const RISK: Record<string, { label: string; tone: Tone }> = {
-  high: { label: "High", tone: "danger" },
-  medium: { label: "Medium", tone: "warning" },
-  low: { label: "Low", tone: "success" },
-};
+const RISK_TONE: Record<RiskLevel, Tone> = { high: "danger", medium: "warning", low: "success" };
 
+/** Runs a request; a failure shows in the panel's "That didn't work" callout. */
 async function act(run: () => Promise<unknown>): Promise<void> {
   set(failure, null);
   try {
-    const answer = await run();
-    if (answer && typeof answer === "object" && "queue" in answer) set(queue, answer as QueueState);
+    await run();
   } catch (error) {
-    set(failure, error instanceof Error ? error.message : String(error));
+    set(failure, message(error));
   }
 }
 
+/** Runs a request the worker answers with the queue, and shows that queue. */
+const actOnQueue = (run: () => Promise<QueueState>): Promise<void> =>
+  act(async () => set(queue, await run()));
+
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(plugin.on("queue.changed", (state) => set(queue, state)));
-  void act(() => plugin.request("queue.get"));
+  void actOnQueue(() => plugin.request("queue.get"));
 }
 
 const generate = (item: QueueItem) => () =>
-  act(() => plugin.request("guide.generate", { key: item.key }));
+  actOnQueue(() => plugin.request("guide.generate", { key: item.key }));
 const open = (item: QueueItem) => () =>
   act(() => plugin.request("guide.open", { key: item.key }, { timeoutMs: 20_000 }));
 const hasGuide = (item: QueueItem) => item.status === "ready" || item.status === "stale";
@@ -69,7 +71,7 @@ function OptIn({ repo, agent }: { repo: RepoState; agent: string }) {
         <Row gap="xs">
           <Button
             onPress={() =>
-              act(() => plugin.request("repo.setOptIn", { repo: repo.repo, optIn: true }))
+              actOnQueue(() => plugin.request("repo.setOptIn", { repo: repo.repo, optIn: true }))
             }
           >
             Turn on
@@ -77,7 +79,7 @@ function OptIn({ repo, agent }: { repo: RepoState; agent: string }) {
           <Button
             variant="ghost"
             onPress={() =>
-              act(() => plugin.request("repo.setOptIn", { repo: repo.repo, optIn: false }))
+              actOnQueue(() => plugin.request("repo.setOptIn", { repo: repo.repo, optIn: false }))
             }
           >
             Not now
@@ -132,11 +134,11 @@ function slotWord(item: QueueItem): string {
  * colour only repeats it.
  */
 function RiskSlot({ item }: { item: QueueItem }) {
-  const risk = item.risk ? RISK[item.risk] : null;
+  const tone = item.risk ? RISK_TONE[item.risk] : undefined;
   return (
-    <Box width={76} shrink={false} border={risk ? risk.tone : true} radius="full" align="center">
-      <Text size="xs" weight="medium" tone={risk?.tone} muted={!risk}>
-        {risk ? risk.label : slotWord(item)}
+    <Box width={76} shrink={false} border={tone ?? true} radius="full" align="center">
+      <Text size="xs" weight="medium" tone={tone} muted={!item.risk}>
+        {item.risk ? RISK_WORD[item.risk] : slotWord(item)}
       </Text>
     </Box>
   );
@@ -277,11 +279,122 @@ function ShowMine() {
       variant="ghost"
       size="sm"
       onPress={() =>
-        act(() => plugin.request("lane.showAuthored", { show: true }, { timeoutMs: 120_000 }))
+        actOnQueue(() =>
+          plugin.request("lane.showAuthored", { show: true }, { timeoutMs: 120_000 }),
+        )
       }
     >
       Show my own PRs
     </Button>
+  );
+}
+
+/** The heading with Check now, which gives way to a spinner while a check runs. */
+function Top({ s }: { s: QueueState | null }) {
+  return (
+    <Row justify="between" align="center">
+      <Heading>Reviews</Heading>
+      {s?.checking ? (
+        <Spinner label="Checking GitHub" labelHidden />
+      ) : (
+        <IconButton
+          icon="refresh"
+          label="Check now"
+          tooltip={
+            s?.checkedAt != null ? `Check now · last checked ${clock(s.checkedAt)}` : "Check now"
+          }
+          onPress={() =>
+            actOnQueue(() => plugin.request("queue.refresh", undefined, { timeoutMs: 120_000 }))
+          }
+        />
+      )}
+    </Row>
+  );
+}
+
+/** The reviews you owe, or one line saying there are none (quiet when other sections have rows). */
+function QueueSection({ s }: { s: QueueState }) {
+  if (s.queue.length)
+    return (
+      <Stack gap="xs">
+        <Text muted size="xs" weight="semibold">
+          Queue · {s.queue.length}
+        </Text>
+        <List label="Review queue">
+          {s.queue.map((item) => (
+            <QueueRow key={item.key} item={item} current={item.key === s.openKey} />
+          ))}
+        </List>
+      </Stack>
+    );
+  if (s.checkedAt === null) return null;
+  if (s.notQueued.length || s.authored.length)
+    return (
+      // The sections below have rows: one quiet line, so they stay in view.
+      <Row gap="xs" justify="between" align="center" wrap>
+        <Text muted size="sm">
+          Nothing waiting for your review
+        </Text>
+        {!s.includeAuthored ? <ShowMine /> : null}
+      </Row>
+    );
+  return (
+    <Stack gap="xs" align="center">
+      <EmptyState icon="check" title="Nothing waiting for your review" />
+      {!s.includeAuthored ? <ShowMine /> : null}
+    </Stack>
+  );
+}
+
+/** Not queued and Your PRs, each folded away and only there when it has rows. */
+function OtherSections({ s }: { s: QueueState }) {
+  return (
+    <>
+      {s.notQueued.length ? (
+        <Collapsible title={`Not queued · ${s.notQueued.length}`}>
+          <List label="Not queued">
+            {s.notQueued.map((item) => (
+              <ManualRow key={item.key} item={item} />
+            ))}
+          </List>
+        </Collapsible>
+      ) : null}
+      {s.authored.length ? (
+        <Collapsible title={`Your PRs · ${s.authored.length}`}>
+          <List label="Your PRs">
+            {s.authored.map((item) =>
+              hasGuide(item) || item.status === "failed" ? (
+                <QueueRow key={item.key} item={item} current={item.key === s.openKey} />
+              ) : (
+                <ManualRow key={item.key} item={item} />
+              ),
+            )}
+          </List>
+        </Collapsible>
+      ) : null}
+    </>
+  );
+}
+
+/** Everything under the heading once the queue has loaded. */
+function Loaded({ s }: { s: QueueState }) {
+  return (
+    <Stack gap="md">
+      {s.notice ? (
+        <Callout
+          tone={s.notice.tone}
+          icon={s.notice.tone === "danger" ? "error" : "warning"}
+          title={s.notice.text}
+        />
+      ) : null}
+      {s.repos
+        .filter((r) => r.optIn === null && r.hasClone)
+        .map((r) => (
+          <OptIn key={r.repo} repo={r} agent={s.agentLabel} />
+        ))}
+      <QueueSection s={s} />
+      <OtherSections s={s} />
+    </Stack>
   );
 }
 
@@ -290,93 +403,13 @@ export default function Panel() {
   const problem = read(failure);
   return (
     <Stack gap="md">
-      <Row justify="between" align="center">
-        <Heading>Reviews</Heading>
-        {s?.checking ? (
-          <Spinner label="Checking GitHub" labelHidden />
-        ) : (
-          <IconButton
-            icon="refresh"
-            label="Check now"
-            tooltip={
-              s?.checkedAt != null ? `Check now · last checked ${clock(s.checkedAt)}` : "Check now"
-            }
-            onPress={() =>
-              act(() => plugin.request("queue.refresh", undefined, { timeoutMs: 120_000 }))
-            }
-          />
-        )}
-      </Row>
+      <Top s={s} />
       {problem ? (
         <Callout tone="warning" title="That didn't work">
           <Text size="sm">{problem}</Text>
         </Callout>
       ) : null}
-      {!s ? (
-        <Skeleton lines={4} label="Loading your review queue" />
-      ) : (
-        <Stack gap="md">
-          {s.notice ? (
-            <Callout
-              tone={s.notice.tone}
-              icon={s.notice.tone === "danger" ? "error" : "warning"}
-              title={s.notice.text}
-            />
-          ) : null}
-          {s.repos
-            .filter((r) => r.optIn === null && r.hasClone)
-            .map((r) => (
-              <OptIn key={r.repo} repo={r} agent={s.agentLabel} />
-            ))}
-          {s.queue.length ? (
-            <Stack gap="xs">
-              <Text muted size="xs" weight="semibold">
-                Queue · {s.queue.length}
-              </Text>
-              <List label="Review queue">
-                {s.queue.map((item) => (
-                  <QueueRow key={item.key} item={item} current={item.key === s.openKey} />
-                ))}
-              </List>
-            </Stack>
-          ) : s.checkedAt !== null && (s.notQueued.length || s.authored.length) ? (
-            // The sections below have rows: one quiet line, so they stay in view.
-            <Row gap="xs" justify="between" align="center" wrap>
-              <Text muted size="sm">
-                Nothing waiting for your review
-              </Text>
-              {!s.includeAuthored ? <ShowMine /> : null}
-            </Row>
-          ) : s.checkedAt !== null ? (
-            <Stack gap="xs" align="center">
-              <EmptyState icon="check" title="Nothing waiting for your review" />
-              {!s.includeAuthored ? <ShowMine /> : null}
-            </Stack>
-          ) : null}
-          {s.notQueued.length ? (
-            <Collapsible title={`Not queued · ${s.notQueued.length}`}>
-              <List label="Not queued">
-                {s.notQueued.map((item) => (
-                  <ManualRow key={item.key} item={item} />
-                ))}
-              </List>
-            </Collapsible>
-          ) : null}
-          {s.authored.length ? (
-            <Collapsible title={`Your PRs · ${s.authored.length}`}>
-              <List label="Your PRs">
-                {s.authored.map((item) =>
-                  hasGuide(item) || item.status === "failed" ? (
-                    <QueueRow key={item.key} item={item} current={item.key === s.openKey} />
-                  ) : (
-                    <ManualRow key={item.key} item={item} />
-                  ),
-                )}
-              </List>
-            </Collapsible>
-          ) : null}
-        </Stack>
-      )}
+      {s ? <Loaded s={s} /> : <Skeleton lines={4} label="Loading your review queue" />}
     </Stack>
   );
 }

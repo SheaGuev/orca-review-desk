@@ -1,8 +1,7 @@
 // What the guide tab's overview shows about findings (their order, which ones wait behind
 // "Show more", which tour stop each one belongs to) and about changed files (the stop to review
 // each in). Pure, so it is tested without a DOM.
-import type { Finding, LineRange, Severity } from "./schema";
-import { SEVERITIES } from "./schema";
+import { SEVERITIES, type Finding, type LineRange, type Severity } from "./schema";
 
 /** Findings listed before the rest wait behind "Show N more": few enough that the tour stays in view. */
 export const FINDINGS_SHOWN = 3;
@@ -48,10 +47,10 @@ export function stopForFinding(
       ? undefined
       : onFile.find(
           (i) =>
-            stops[i].files[0] === finding.file &&
-            stops[i].focus?.some((r) => line >= r.start && line <= r.end),
+            stops[i]?.files[0] === finding.file &&
+            stops[i]?.focus?.some((r) => line >= r.start && line <= r.end),
         );
-  return covering ?? onFile[0];
+  return covering ?? onFile[0] ?? null;
 }
 
 /** "2 major · 6 minor · 4 nit": the counts as text, most severe first. */

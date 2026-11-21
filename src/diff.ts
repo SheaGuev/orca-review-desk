@@ -2,6 +2,7 @@
 // may sit on, and which files the agent read with its own tools. Pure, so the worker and the tests
 // share it.
 import { isLockfile } from "./repo";
+import type { Coverage } from "./schema";
 
 /** Characters of diff the prompt may carry; whole files only, so nothing is cut mid-file. */
 export const PROMPT_DIFF_BUDGET = 180_000;
@@ -65,7 +66,7 @@ export function splitDiff(text: string, opts: { keepLockfiles?: boolean } = {}):
       // Deleted, binary or mode-only: take the path from the header, `diff --git a/x b/x`.
       const header = chunk.slice(0, chunk.indexOf("\n") === -1 ? undefined : chunk.indexOf("\n"));
       const m = /^diff --git (?:"?a\/)(.+?)"? (?:"?b\/)(.+?)"?$/.exec(header);
-      path = m ? m[2] : (oldPath ?? "");
+      path = m?.[2] ?? oldPath ?? "";
     }
     if (!path || (isLockfile(path) && !opts.keepLockfiles)) continue;
     const base = renameFrom ?? oldPath;
@@ -86,9 +87,12 @@ export function splitDiff(text: string, opts: { keepLockfiles?: boolean } = {}):
  * side, read from the hunk headers. GitHub refuses a comment on any other line.
  */
 export function commentableLines(diffText: string): Map<string, Set<number>> {
-  const out = new Map<string, Set<number>>();
-  for (const file of splitDiff(diffText)) out.set(file.path, linesOf(file.text));
-  return out;
+  return linesByFile(splitDiff(diffText));
+}
+
+/** The same, for a diff already split into files. */
+export function linesByFile(files: readonly FileDiff[]): Map<string, Set<number>> {
+  return new Map(files.map((file) => [file.path, linesOf(file.text)]));
 }
 
 function linesOf(text: string): Set<number> {
@@ -176,7 +180,7 @@ function words(command: string): string[] {
   const out: string[] = [];
   const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s"'|;&]+)/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(command))) out.push(m[1] ?? m[2] ?? m[3]);
+  while ((m = re.exec(command))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
   return out;
 }
 
@@ -223,6 +227,7 @@ export function filesReadByAgent(
       let afterDashes = false;
       for (let k = j + 1; k < w.length && w[k] !== "git"; k++) {
         const t = w[k];
+        if (t === undefined) continue;
         if (t === "--") afterDashes = true;
         else if (afterDashes) mark(t);
         else if (sub === "show" && /^[^-][^:]*:.+/.test(t)) mark(t.slice(t.indexOf(":") + 1));
@@ -232,8 +237,6 @@ export function filesReadByAgent(
   }
   return changed.filter((f) => read.has(f));
 }
-
-export type Coverage = { inPrompt: string[]; readByAgent: string[]; notRead: string[] };
 
 export function coverage(
   changed: readonly string[],

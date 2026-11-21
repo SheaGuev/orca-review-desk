@@ -1,16 +1,16 @@
 // Pieces of the guide the tour views draw: headlines with their detail behind "More", sections,
 // the Before merge checklist, claims, flows and coverage. Everything
 // from a guide goes in as text, never as HTML.
-import type {
-  Finding,
-  Point,
-  PrGuide,
-  Severity,
-  SkipReason,
-  StopDepth,
-  StopWhy,
+import {
+  SEVERITIES,
+  type Finding,
+  type Point,
+  type PrGuide,
+  type Severity,
+  type SkipReason,
+  type StopDepth,
 } from "../src/schema";
-import { SEVERITIES } from "../src/schema";
+import { prKey } from "../src/repo";
 import { h, prose } from "./dom";
 
 export const RISK_LABEL = { high: "High risk", medium: "Medium risk", low: "Low risk" } as const;
@@ -21,16 +21,11 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   nit: "Nit",
 };
 export const DEPTH_LABEL: Record<StopDepth, string> = { deep: "Deep", skim: "Skim" };
-/** Why a stop has its depth, as the overview's stop list says it. */
-export const WHY_LABEL: Record<StopWhy, string> = {
-  finding: "has findings",
-  risky: "risky kind of change",
-  core: "core logic",
-  routine: "routine",
-  repeated: "repeated change",
-  tests: "tests",
-  docs: "docs",
-};
+/**
+ * The last step's one name, wherever it shows (the bar's button, Next, the step list, the menu,
+ * the heading): it says what the reviewer does there, as GitHub's "Finish your review" does.
+ */
+export const FINISH = "Finish review";
 export const SKIP_LABEL: Record<SkipReason, string> = {
   lockfile: "Lockfile",
   generated: "Generated",
@@ -147,8 +142,8 @@ export function checklist(guide: PrGuide, level: "h2" | "h3" = "h2"): HTMLElemen
   const list = h("ul", { class: "checklist" });
   guide.risk.beforeMerge.forEach((step, i) => {
     // Ticks are a reading aid for this reviewer, kept in this frame's own storage per commit.
-    const id = `check:${guide.pr.repo}#${guide.pr.number}@${guide.pr.commit}:${i}`;
-    const input = h("input", { type: "checkbox" }) as HTMLInputElement;
+    const id = `check:${prKey(guide.pr.repo, guide.pr.number)}@${guide.pr.commit}:${i}`;
+    const input = h("input", { type: "checkbox" });
     try {
       input.checked = localStorage.getItem(id) === "1";
     } catch {
@@ -168,21 +163,9 @@ export function checklist(guide: PrGuide, level: "h2" | "h3" = "h2"): HTMLElemen
   return section("before-h", "Before merge", null, level, list);
 }
 
-export function claims(guide: PrGuide): HTMLElement {
-  if (!guide.claimsCheck.length)
-    return section(
-      "claims-h",
-      "Claims check",
-      null,
-      "h3",
-      h(
-        "p",
-        { class: "muted" },
-        guide.pr.hasDescription
-          ? "The description makes no claims to check."
-          : "No description to check against the diff.",
-      ),
-    );
+export function claims(guide: PrGuide): HTMLElement | null {
+  // Nothing to check (no description, or one that claims nothing) is a section with nothing in it.
+  if (!guide.claimsCheck.length) return null;
   return section(
     "claims-h",
     "Claims check",
@@ -210,7 +193,7 @@ export function claims(guide: PrGuide): HTMLElement {
 
 export function coverageLine(guide: PrGuide): HTMLElement | null {
   const c = guide.coverage;
-  if (!c || !c.notRead.length) return null;
+  if (!c?.notRead.length) return null;
   const total = c.notRead.length + new Set([...c.inPrompt, ...c.readByAgent]).size;
   const codex = guide.generatedBy.harness === "codex";
   return h(

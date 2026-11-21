@@ -2,6 +2,7 @@ import { assert, test } from "orca/testing";
 import {
   countOwnedFiles,
   isLockfileOnly,
+  lockfileSource,
   ownersOf,
   parseCodeowners,
   parseTeams,
@@ -50,4 +51,18 @@ test("parses the teams setting", () => {
     "acme/identity",
   ]);
   assert.deepEqual(parseTeams(undefined), []);
+});
+
+test("a lockfile's source is the changed manifest it follows, the nearest one first", () => {
+  const changed = ["apps/web/package.json", "package.json", "Cargo.toml", "src/a.ts"];
+  assert.equal(lockfileSource("bun.lock", changed), "package.json");
+  assert.equal(lockfileSource("apps/web/package-lock.json", changed), "apps/web/package.json");
+  assert.equal(lockfileSource("Cargo.lock", changed), "Cargo.toml");
+  assert.equal(
+    lockfileSource("libs/x/yarn.lock", changed),
+    "apps/web/package.json",
+    "no manifest beside it: any changed one of its kind",
+  );
+  assert.equal(lockfileSource("go.sum", changed), null, "its manifest did not change");
+  assert.equal(lockfileSource("src/a.ts", changed), null, "not a lockfile");
 });

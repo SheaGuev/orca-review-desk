@@ -19,11 +19,11 @@ export function parseNameStatusZ(out: string): NameStatus[] {
     if (!code) continue;
     const letter = code[0] as FileStatus;
     if (letter === "R" || letter === "C") {
-      const oldPath = parts[i++];
-      const path = parts[i++];
+      const oldPath = parts[i++] ?? "";
+      const path = parts[i++] ?? "";
       rows.push({ path, oldPath, status: letter });
     } else {
-      rows.push({ path: parts[i++], status: letter === "U" ? "M" : letter });
+      rows.push({ path: parts[i++] ?? "", status: letter === "U" ? "M" : letter });
     }
   }
   return rows;
@@ -42,7 +42,11 @@ export function parseNumstatZ(out: string): NumStat[] {
       i++; // old path
       path = parts[i++];
     }
-    rows.push({ path, added: a === "-" ? null : Number(a), deleted: d === "-" ? null : Number(d) });
+    rows.push({
+      path: path ?? "",
+      added: a === "-" ? null : Number(a),
+      deleted: d === "-" ? null : Number(d),
+    });
   }
   return rows;
 }
@@ -58,7 +62,7 @@ export function parseLinguistAttributes(out: string): Map<string, PathAttributes
   const result = new Map<string, PathAttributes>();
   const parts = out.split("\0");
   for (let i = 0; i + 2 < parts.length; i += 3) {
-    const [path, attr, value] = [parts[i], parts[i + 1], parts[i + 2]];
+    const [path = "", attr, value] = [parts[i], parts[i + 1], parts[i + 2]];
     if (value !== "set" && value !== "true") continue;
     const entry = result.get(path) ?? {};
     if (attr === "linguist-generated") entry.generated = true;
