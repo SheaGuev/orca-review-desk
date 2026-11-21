@@ -6,6 +6,30 @@
   "version": "0.2.0",
   "description": "A review queue of the PRs waiting for you, in the order to review them, each with an agent-written guide: risk, findings with suggested comments, what changed in reading order, a note on every file, a claims check, and a review you post to GitHub from the guide.",
   "license": "MIT",
+  "cover": {
+    "path": "assets/cover.png",
+    "alt": "A PR Tour guide for a dashboard restyle PR: risk, findings, the changes by area and the 13-stop tour"
+  },
+  "screenshots": [
+    {
+      "path": "assets/guide-overview.png",
+      "alt": "Guide overview with what, why and impact, a medium risk callout, findings with severity and the changes bar",
+      "caption": "Overview: risk, findings and where the changes are",
+      "theme": "dark"
+    },
+    {
+      "path": "assets/guide-stop.png",
+      "alt": "A tour stop explaining a CSS token swap above the diff of index.css",
+      "caption": "A tour stop: one idea, only the hunks that explain it",
+      "theme": "dark"
+    },
+    {
+      "path": "assets/guide-finish.png",
+      "alt": "Finish review step with an open finding to add or dismiss and two pending comments",
+      "caption": "Finish review: settle findings, then post one GitHub review",
+      "theme": "dark"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.259"
   },

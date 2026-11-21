@@ -10,7 +10,11 @@ or Comment, posted as one GitHub review by pressing **Post to GitHub**.
 Everything runs inside Orca on your machine, with your own `gh` and agent sign-ins. Nothing is
 posted to GitHub except by pressing **Post to GitHub** in a guide, and no CI is involved.
 
+![A PR Tour guide: risk, findings, the changes by area and the tour](assets/cover.png)
+
 ## Where it shows up in Orca
+
+<img src="assets/panel-queue.png" width="400" alt="The Reviews panel listing a PR with a medium risk badge and its tour progress">
 
 | Where | What |
 | --- | --- |
@@ -63,6 +67,8 @@ unreachable, the agent not signed in, or the daily limit reached (which resets a
 
 ## Reviewing from the guide
 
+![A tour stop: the explanation above the diff it covers](assets/guide-stop.png)
+
 Hover or focus an added or unchanged line and press **+** to comment on it; Shift+**+** on a
 second line of the same hunk makes it a range. **Comment on file** comments on the whole file. Each
 opens a composer in place (no line numbers to type), and pending comments show as cards under
@@ -81,6 +87,8 @@ as what, and what it carries, and what is not done yet (open findings, files not
    a range adds `start_line`).
 3. Whole-file comments follow one by one (`subject_type: file`); one GitHub refuses stays in the
    draft and is listed.
+
+![Finish review: open findings to add or dismiss, then the pending comments and summary](assets/guide-finish.png)
 
 ## Changes on the overview
 
