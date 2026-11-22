@@ -212,6 +212,9 @@ span.bd-where { padding: 0 10px; }
 .start-actions { flex: none; padding-top: 2px; }
 .restart-confirm .btn.danger { color: var(--danger); border-color: var(--danger); }
 .meta .tag { display: inline-flex; vertical-align: baseline; height: 20px; }
+.since { display: flex; flex-direction: column; gap: 6px; margin-top: -10px; }
+.since-line .link { white-space: nowrap; margin-left: 4px; }
+.since .file-rows { font-size: 13.5px; color: var(--fg); }
 .ov-top { display: flex; flex-direction: column; gap: 22px; }
 html.w-cols .ov-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 48px; align-items: start; }
 .head-actions { flex: none; }
@@ -244,6 +247,7 @@ html.w-cols .provenance { text-align: right; }
 /* Where the tour starts or resumes: the accent outline, and the mark says it in words. */
 .tour-step.here { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .tour-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 12px var(--mono); color: var(--muted); }
+.tour-step-changed { font: 500 12px var(--sans); color: var(--muted); }
 .tour-step-mark { font: 600 12px var(--sans); }
 .tour-step-mark.start, .tour-step-mark.resume { color: var(--accent); }
 .tour-step-mark.seen { color: var(--add); }
