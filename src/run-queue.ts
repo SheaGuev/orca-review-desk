@@ -1,6 +1,6 @@
 // Agent runs, one at a time: the ones a person asked for and the automatic ones, which wait for
 // pushes to settle and stop at the daily limit.
-import { patchItem, runState, type WorkerState } from "./worker-state";
+import { patchItem, rateLimited, runState, type WorkerState } from "./worker-state";
 
 /** After an author pushes, wait this long for more pushes before updating the guide. */
 const SETTLE_MS = 90_000;
@@ -83,6 +83,8 @@ function settled(q: Queue, key: string, head: string, now: number): boolean {
 
 function scheduleAutomatic(q: Queue): void {
   const { state } = q.deps;
+  // GitHub's rate limit holds automatic runs too; a run you ask for still starts.
+  if (rateLimited(state)) return;
   const now = Date.now();
   for (const t of state.tracked.values()) {
     const { item } = t;

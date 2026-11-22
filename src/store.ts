@@ -63,7 +63,11 @@ export type SavedPr = Pick<
   | "team"
   | "ownedFiles"
   | "manualReason"
-> & { branch: string };
+> & {
+  branch: string;
+  /** GitHub's author_association as last read; left out when it was not read. */
+  association?: string;
+};
 
 /** The PRs the last successful check found, and when it ran. */
 export type LastCheck = { checkedAt: number; prs: SavedPr[] };
@@ -75,7 +79,7 @@ function asSavedPr(v: unknown): SavedPr | null {
   if (!isObj(v)) return null;
   const { key, repo, number, title, author, url, lane, draft, additions, deletions } = v;
   const { changedFiles, headSha, hasClone, requestedAt, team, ownedFiles, manualReason } = v;
-  const { branch } = v;
+  const { branch, association } = v;
   if (
     !isString(key) ||
     !isString(repo) ||
@@ -116,6 +120,7 @@ function asSavedPr(v: unknown): SavedPr | null {
     ownedFiles,
     manualReason,
     branch,
+    ...(isString(association) ? { association } : {}),
   };
 }
 

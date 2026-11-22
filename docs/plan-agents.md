@@ -420,3 +420,26 @@ own table.
   wave ships as fast as those are available.
 - **Evidence quality**: gemini's "headless denies tools that would ask" comes from a search snippet
   of its policy-engine page; `verify-agent` is what settles it.
+
+## 10. GitHub calls
+
+**As built**: fewer calls and no bursts. With 20 PRs a first check made 42 `gh` calls, an unchanged
+refresh 22 and a quick restart 42 again, up to 6 at once. Now:
+
+- **Quick restart**: a worker restarted less than 2 minutes (`RECENT_CHECK_MS`) after the saved
+  check lists the saved PRs and asks GitHub nothing; the 5-minute poll checks later. Refresh and
+  settings changes still check at once.
+- **Unchanged PRs**: each PR's `gh pr view` details are kept in memory with the search hit's
+  `updated_at` and read again only when it moves; PRs no longer found are dropped. Review-request
+  times stay keyed by head, and a head GitHub gave no time for is not asked again, so an unchanged
+  PR costs no GraphQL query.
+- **Rate limit**: a check that fails with "rate limit" asks `gh api rate_limit` (free) for the
+  latest reset among the used-up resources; without one (none given, past, or the call failed) it
+  waits 5, 10, 20, 40, then 60 minutes. Until then the poll, startup and settle checks and automatic
+  guide runs wait; Refresh still tries, and a check that works ends the wait. The notice reads
+  "GitHub rate limit reached · checks resume at HH:MM" when GitHub gave the time, else "… · last
+  checked HH:MM".
+- **Author associations** are saved with the list (`SavedPr.association`, optional), so a restart
+  does not ask them again.
+- **3 at once**: every `gh` call in `src/github.ts` waits for one of `GH_AT_ONCE` (3) slots, and the
+  check's lane searches, details and GraphQL queries run through `mapLimit` with the same limit.

@@ -22,6 +22,12 @@ export type WorkerState = {
   checkedAt: number | null;
   /** Why the last check failed; null once one works. */
   lastError: string | null;
+  /**
+   * After checks hit GitHub's rate limit: automatic checks and runs wait until `resumeAt`,
+   * `fromGitHub` when that is GitHub's own reset time; `strikes` counts the checks limited in a
+   * row. Null once a check works.
+   */
+  rateLimit: { resumeAt: number; fromGitHub: boolean; strikes: number } | null;
   /** The last agent run failed for want of a sign-in; cleared by the next run that works. */
   agentSignedOut: boolean;
   /** The label of the agent whose CLI the last run could not find; cleared by the next run that works. */
@@ -42,6 +48,7 @@ export const createWorkerState = (settings: Settings, runsToday: number): Worker
   checking: false,
   checkedAt: null,
   lastError: null,
+  rateLimit: null,
   agentSignedOut: false,
   agentMissing: null,
   openKey: null,
@@ -59,6 +66,13 @@ export function runState(state: WorkerState, key: string): RunState {
   if (state.generating.has(key)) return "generating";
   return state.queued.some((q) => q.key === key) ? "queued" : null;
 }
+
+/** Whether a check failed for GitHub's rate limit, by its error text. */
+export const isRateLimit = (error: string): boolean => /rate limit/i.test(error);
+
+/** Whether automatic checks and runs wait for GitHub's rate limit to lift. */
+export const rateLimited = (state: WorkerState): boolean =>
+  state.rateLimit !== null && Date.now() < state.rateLimit.resumeAt;
 
 const clock = (ms: number): string =>
   new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -82,7 +96,13 @@ function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null 
       turnOn: tampered.repo,
     };
   if (state.lastError) {
-    const what = /rate limit/i.test(state.lastError)
+    const limit = state.rateLimit;
+    if (isRateLimit(state.lastError) && limit?.fromGitHub && rateLimited(state))
+      return {
+        tone: "warning",
+        text: `GitHub rate limit reached · checks resume at ${clock(limit.resumeAt)}`,
+      };
+    const what = isRateLimit(state.lastError)
       ? "GitHub rate limit reached"
       : "Couldn't reach GitHub";
     return {

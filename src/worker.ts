@@ -11,7 +11,7 @@ import { createClones, type Clones } from "./clones";
 import { fail, message } from "./errors";
 import { loadLoginPath } from "./exec";
 import { createFocus, type Focus } from "./focus";
-import { prDetails } from "./github";
+import { prDetails, rateLimitReset } from "./github";
 import { createGuideRun } from "./guide-run";
 import { createOpener, type Opener } from "./open-guide";
 import { createPrData } from "./pr-data";
@@ -27,13 +27,19 @@ import { createStore, type SavedPr, type Store, type StoredGuide } from "./store
 import { createTourProgress } from "./tour-progress";
 import {
   createWorkerState,
+  isRateLimit,
   patchItem,
   queueStateOf,
+  rateLimited,
   runState,
   type WorkerState,
 } from "./worker-state";
 
 const POLL_MS = 5 * 60_000;
+/** A restart this soon after the last check lists the saved PRs and leaves checking to the poll. */
+const RECENT_CHECK_MS = 2 * 60_000;
+/** Waits after checks hit the rate limit in a row, when GitHub gives no reset time. */
+const RATE_LIMIT_BACKOFF_MS = [5, 10, 20, 40, 60].map((m) => m * 60_000);
 /** Guides of PRs that left the queue are forgotten after this long. */
 const KEEP_GUIDES_MS = 14 * 24 * 60 * 60_000;
 
@@ -116,6 +122,25 @@ function showPending(p: Parts, key: string, count: number): void {
 }
 
 /**
+ * After a check hit the rate limit: automatic checks wait until GitHub's reset for the resources
+ * used up, else for a backoff that grows with each limited check in a row.
+ */
+async function holdForRateLimit(state: WorkerState): Promise<void> {
+  const strikes = (state.rateLimit?.strikes ?? 0) + 1;
+  const reset = await rateLimitReset();
+  const now = Date.now();
+  // A reset already past says nothing about when the limit lifts.
+  state.rateLimit =
+    reset !== null && reset > now
+      ? { resumeAt: reset, fromGitHub: true, strikes }
+      : {
+          resumeAt: now + (RATE_LIMIT_BACKOFF_MS[strikes - 1] ?? RATE_LIMIT_BACKOFF_MS.at(-1) ?? 0),
+          fromGitHub: false,
+          strikes,
+        };
+}
+
+/**
  * `refresh`: one check of GitHub at a time, shared by everyone who asks meanwhile. Each check
  * then queues the automatic runs now due (`afterCheck`) and forgets guides long gone.
  */
@@ -136,9 +161,10 @@ function createRefresh(
   return () => {
     if (checking) return checking;
     const run = checkOnce()
-      .catch((e: unknown) => {
+      .catch(async (e: unknown) => {
         p.state.lastError = message(e);
         p.log(`check failed: ${p.state.lastError}`);
+        if (isRateLimit(p.state.lastError)) await holdForRateLimit(p.state);
       })
       .finally(() => {
         checking = null;
@@ -211,6 +237,12 @@ async function clearOldRuns(orca: OrcaWorkerApi, log: (text: string) => void): P
   }
 }
 
+/** Whether the list restored at startup was checked too recently to check again yet. */
+function checkedRecently(state: WorkerState): boolean {
+  const since = state.checkedAt === null ? null : Date.now() - state.checkedAt;
+  return since !== null && since >= 0 && since < RECENT_CHECK_MS;
+}
+
 /**
  * Before the first check: the login shell's PATH, no run folders left by a crash, and the list
  * from before a restart shown until the check replaces it.
@@ -233,6 +265,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const openWhenReady = new Set<string>();
   const queue = createQueueCheck({ ...parts, readSettings: settingsNow });
   const refresh = createRefresh(parts, queue.check, () => runs.scheduleAutomatic());
+  /** A check nobody asked for (the poll, a restart, pushes settling) waits out a rate limit. */
+  const autoRefresh = (): Promise<void> => (rateLimited(state) ? Promise.resolve() : refresh());
   const generate = createGuideRun({
     state,
     store,
@@ -246,7 +280,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
       await orca.host.call("notifications.show", { title, body }).catch(() => undefined);
     },
   });
-  const runs: RunQueue = createRunQueue({ state, generate, publish, refresh });
+  const runs: RunQueue = createRunQueue({ state, generate, publish, refresh: autoRefresh });
   const reviews = reviewsFor(parts, refresh);
   registerRequests(orca, {
     state,
@@ -270,10 +304,10 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   });
 
   await beforeFirstCheck(orca, parts, queue.restore);
-  const poll = setInterval(() => void refresh(), POLL_MS);
+  const poll = setInterval(() => void autoRefresh(), POLL_MS);
   stopTimers = () => {
     clearInterval(poll);
     runs.stop();
   };
-  void refresh();
+  if (!checkedRecently(state)) void autoRefresh();
 }

@@ -3,7 +3,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Clone } from "./git";
-import { searchPrs, type PrDetails, type SearchHit } from "./github";
+import { mapLimit } from "./cache";
+import { GH_AT_ONCE, searchPrs, type PrDetails, type SearchHit } from "./github";
 import type { ItemStatus, Lane, QueueItem } from "./protocol";
 import { countOwnedFiles, isLockfileOnly, parseCodeowners, prKey } from "./repo";
 import { riskHeadline, SCHEMA_ID } from "./schema";
@@ -21,7 +22,7 @@ export type Found = { hit: SearchHit; lane: Lane; team: string | null };
 /** What an agent run is doing for a PR right now, if anything. */
 export type RunState = "generating" | "queued" | null;
 
-/** Every lane's search at once; a PR found by several keeps the first lane, in this order. */
+/** Every lane's search, GH_AT_ONCE at a time; a PR found by several keeps the first lane, in this order. */
 export async function searchLanes(
   settings: Pick<Settings, "teams" | "includeAuthored">,
 ): Promise<Map<string, Found>> {
@@ -36,7 +37,7 @@ export async function searchLanes(
       ? [{ qualifier: "author:@me", lane: "authored" as const, team: null }]
       : []),
   ];
-  const results = await Promise.all(lanes.map((l) => searchPrs(l.qualifier)));
+  const results = await mapLimit(lanes, GH_AT_ONCE, (l) => searchPrs(l.qualifier));
   const found = new Map<string, Found>();
   lanes.forEach(({ lane, team }, i) => {
     for (const hit of results[i] ?? []) {
@@ -198,9 +199,10 @@ export async function buildItem(pr: PrFound, deps: ItemDeps): Promise<Tracked> {
 }
 
 /** What the last check knew of a tracked PR, saved so a restarted worker can list it again. */
-export function savedPr(t: Tracked): SavedPr {
+export function savedPr(t: Tracked, association: string | undefined): SavedPr {
   const { item: i } = t;
   return {
+    ...(association ? { association } : {}),
     key: i.key,
     repo: i.repo,
     number: i.number,
@@ -227,7 +229,7 @@ export function savedPr(t: Tracked): SavedPr {
  * found again when needed; the next check replaces the whole entry.
  */
 export async function restoreItem(saved: SavedPr, deps: ItemDeps): Promise<Tracked> {
-  const { branch, ...row } = saved;
+  const { branch, association: _association, ...row } = saved;
   const lockfileOnly = saved.manualReason === "Lockfile only";
   return {
     branch,

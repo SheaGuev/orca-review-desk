@@ -56,12 +56,39 @@ function fakeTools(opts: {
   ghDown?: boolean;
   /** The PR's diff; DIFF when left out. */
   diff?: string;
+  /** Each PR's updated_at in search results, by number; a test may change it between checks. */
+  updatedAt?: Record<number, string>;
+  /** While on, every gh call but rate_limit fails with the rate limit; `reset` is epoch seconds. */
+  limit?: { on: boolean; reset: number };
+  /** gh calls answer after a short delay, and the most in flight at once is recorded. */
+  inFlight?: { now: number; max: number };
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
   setRunner(async (cmd, args, options) => {
     calls.push({ cmd, args, options });
     const ok = (stdout: string) => ({ stdout, stderr: "", code: 0 });
+    if (cmd === "gh" && opts.inFlight) {
+      const f = opts.inFlight;
+      f.now++;
+      f.max = Math.max(f.max, f.now);
+      await new Promise((r) => setTimeout(r, 15));
+      f.now--;
+    }
+    if (cmd === "gh" && args[0] === "api" && args[1] === "rate_limit") {
+      const reset = opts.limit?.reset ?? 0;
+      return ok(
+        JSON.stringify({
+          resources: { core: { reset }, graphql: { reset }, search: { reset } },
+        }),
+      );
+    }
+    if (cmd === "gh" && opts.limit?.on)
+      return {
+        stdout: "",
+        stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        code: 1,
+      };
     if (cmd === "gh" && opts.ghDown)
       return {
         stdout: "",
@@ -110,7 +137,7 @@ function fakeTools(opts: {
         title: PR_VIEW.title,
         html_url: PR_VIEW.url,
         draft: false,
-        updated_at: "2026-11-19T00:00:00Z",
+        updated_at: opts.updatedAt?.[number] ?? "2026-11-19T00:00:00Z",
         user: { login: "sam" },
         repository_url: "https://api.github.com/repos/acme/api",
       }));
@@ -253,6 +280,9 @@ async function setup(
     before?: (dir: string) => Promise<void>;
     ghDown?: boolean;
     diff?: string;
+    updatedAt?: Record<number, string>;
+    limit?: { on: boolean; reset: number };
+    inFlight?: { now: number; max: number };
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -672,6 +702,8 @@ test("after a restart, a failed first check still shows the last list, with when
   );
   assert.equal(first.all()[0]?.key, "acme/api#7");
   const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  // Long enough ago that the restart checks at once.
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
   await first.worker.deactivate();
 
   // A new worker (Orca restarted, or the plugin reloaded) whose first check hits the rate limit.
@@ -697,6 +729,8 @@ test("restored PRs start no automatic run until a check works; run state is not 
   });
   await until(() => first.all()[0]?.status === "generating", "the automatic run");
   const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  // Long enough ago that the restart checks at once.
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
   await first.worker.deactivate();
 
   const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, { ghDown: true });
@@ -707,6 +741,109 @@ test("restored PRs start no automatic run until a check works; run state is not 
   assert.equal(row?.manualReason, null, "still due an automatic guide");
   assert.equal(row?.status, "none", "the old worker's run is not shown as under way");
   assert.equal(second.calls.filter((c) => c.cmd === "claude").length, 0, "no run before a check");
+});
+
+const ghCalls = (calls: { cmd: string; args: string[] }[]) => calls.filter((c) => c.cmd === "gh");
+const prViews = (calls: { cmd: string; args: string[] }[]) =>
+  calls.filter((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "view");
+const associationCalls = (calls: { cmd: string; args: string[] }[]) =>
+  calls.filter((c) => c.cmd === "gh" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(c.args[1] ?? ""));
+
+test("a restart within 2 minutes of the last check asks GitHub nothing; later it checks", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "check",
+  );
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  const soon = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  await until(() => soon.all().length > 0, "the saved list");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(ghCalls(soon.calls).length, 0, "no GitHub call on a quick restart");
+  assert.deepEqual(
+    soon.all().map((i) => i.key),
+    ["acme/api#7"],
+  );
+  await soon.worker.deactivate();
+
+  const old = structuredClone<Record<string, unknown>>(storage);
+  const saved = old.lastCheck as { checkedAt: number };
+  saved.checkedAt = Date.now() - 3 * 60_000;
+  const later = await setup([JSON.stringify(AGENT_GUIDE)], old);
+  await until(() => ghCalls(later.calls).length > 0, "a check after 2 minutes");
+});
+
+test("a check asks GitHub for details only of PRs that changed", async () => {
+  const updatedAt: Record<number, string> = {};
+  const { worker, calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [7, 8, 9],
+    updatedAt,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.equal(prViews(calls).length, 3);
+  await worker.request("queue.refresh");
+  assert.equal(prViews(calls).length, 3, "nothing changed, so no details asked again");
+  updatedAt[8] = "2026-11-22T12:00:00Z";
+  await worker.request("queue.refresh");
+  assert.deepEqual(
+    prViews(calls)
+      .slice(3)
+      .map((c) => c.args[2]),
+    ["8"],
+    "only the PR that changed",
+  );
+});
+
+test("a rate limit holds checks until GitHub's reset; refresh still tries", async () => {
+  const limit = { on: false, reset: Math.floor(Date.now() / 1000) + 40 * 60 };
+  const { worker, calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    limit,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  limit.on = true;
+  await worker.request("queue.refresh");
+  const resume = new Date(limit.reset * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  assert.ok(
+    latest()?.notice?.text.startsWith(`GitHub rate limit reached · checks resume at ${resume}`),
+    latest()?.notice?.text,
+  );
+  const before = ghCalls(calls).length;
+  await worker.request("queue.refresh");
+  assert.ok(ghCalls(calls).length > before, "a refresh you asked for still tries");
+});
+
+test("after a restart, author lookups are not asked again", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "check",
+  );
+  assert.equal(associationCalls(first.calls).length, 1);
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
+  await first.worker.deactivate();
+
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  await until(
+    () => second.latest()?.checking === false && prViews(second.calls).length > 0,
+    "the check after the restart",
+  );
+  assert.equal(associationCalls(second.calls).length, 0, "the saved answer is used");
+});
+
+test("at most 3 GitHub calls are in flight at once", async () => {
+  const inFlight = { now: 0, max: 0 };
+  const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    inFlight,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.ok(inFlight.max <= 3, `${inFlight.max} at once`);
 });
 
 test("an agent with no sign-in shows as the notice", async () => {
