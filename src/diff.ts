@@ -178,7 +178,9 @@ export type ToolCall = { name: string; input: Record<string, unknown> };
 /**
  * Changed files the agent opened with its `Read` tool: a changed path in the clone, or a file the
  * worker prepared for the run, mapped back through `prepared` (prepared path, relative to the
- * clone, to the PR path it holds).
+ * clone, to the PR path it holds). Agents report resolved paths, so a path outside `cwd` (macOS
+ * `/private/var` for `/var`) still counts when it ends with the clone's directory name plus a
+ * prepared or changed path; the longest such match wins.
  */
 export function filesReadByAgent(
   calls: readonly ToolCall[],
@@ -189,10 +191,13 @@ export function filesReadByAgent(
   const set = new Set(changed);
   const read = new Set<string>();
   const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  const base = `/${root.split("/").at(-2)}/`;
+  const keys = [...prepared.keys(), ...changed].sort((a, b) => b.length - a.length);
   for (const call of calls) {
     if (call.name !== "Read" || typeof call.input.file_path !== "string") continue;
     let path = call.input.file_path;
     if (path.startsWith(root)) path = path.slice(root.length);
+    else if (path.startsWith("/")) path = keys.find((k) => path.endsWith(base + k)) ?? path;
     if (path.startsWith("./")) path = path.slice(2);
     const pr = prepared.get(path) ?? path;
     if (set.has(pr)) read.add(pr);

@@ -185,3 +185,19 @@ test("coverage comes from the files the agent read with its tools", () => {
   assert.deepEqual(filesReadByAgent(calls, changed, "/repo"), ["src/a.ts"]);
   assert.deepEqual(claudeToolCalls('{"type":"result","result":"x"}'), []);
 });
+
+test("a read through the clone's resolved path still counts (macOS /var is /private/var)", () => {
+  const changed = ["src/report.ts", "src/a.ts"];
+  const prepared = new Map([[".pr-tour/runs/7/diffs/0001.diff", "src/report.ts"]]);
+  const calls = [
+    {
+      name: "Read",
+      input: { file_path: "/private/var/folders/x/clone/.pr-tour/runs/7/diffs/0001.diff" },
+    },
+    { name: "Read", input: { file_path: "/private/var/folders/x/clone/src/a.ts" } },
+  ];
+  assert.deepEqual(filesReadByAgent(calls, changed, "/var/folders/x/clone", prepared), [
+    "src/report.ts",
+    "src/a.ts",
+  ]);
+});
