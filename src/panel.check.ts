@@ -274,7 +274,7 @@ export default defineCheck({
   tampered: {
     requests: answer(
       withNotice(
-        "The run for #43841 changed .git/hooks/pre-commit in acme/api · automatic guides are off there until you turn them back on",
+        "The run for #43841 changed .git/hooks/pre-commit in acme/api · automatic guides are off until you have checked the clone",
         "danger",
         "acme/api",
       ),
