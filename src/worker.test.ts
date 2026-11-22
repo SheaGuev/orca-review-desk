@@ -54,6 +54,8 @@ function fakeTools(opts: {
   installed?: (cmd: string) => boolean;
   /** Every gh call fails with GitHub's rate limit. */
   ghDown?: boolean;
+  /** The PR's diff; DIFF when left out. */
+  diff?: string;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -99,7 +101,7 @@ function fakeTools(opts: {
         : ok(opts.overrides);
     if (cmd === "git" && args.includes("check-attr"))
       return ok("assets/logo.png\0linguist-generated\0set\0");
-    if (cmd === "git" && args.includes("diff")) return ok(DIFF);
+    if (cmd === "git" && args.includes("diff")) return ok(opts.diff ?? DIFF);
     if (cmd === "git") return ok("");
     if (cmd === "gh" && args[0] === "api" && args.includes("search/issues")) {
       const q = args.find((a) => a.startsWith("q=")) ?? "";
@@ -250,6 +252,7 @@ async function setup(
     /** Runs on the clone's folder before the worker starts. */
     before?: (dir: string) => Promise<void>;
     ghDown?: boolean;
+    diff?: string;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -1284,6 +1287,42 @@ test("review.submit refuses a comment holding a token and posts nothing", async 
   });
   assert.equal(summary.outcome, "refused", "the summary is checked too");
   assert.equal(posts(calls).length, 0);
+});
+
+/** The PR adds a test fixture shaped like an AWS key: quoting it leaks nothing. */
+const FIXTURE_KEY = "AKIAABCDEFGHIJKLMNOP";
+const DIFF_WITH_FIXTURE = DIFF.replace("+const c = 4;", `+const c = "${FIXTURE_KEY}";`);
+
+test("a guide quoting a secret-shaped string from the PR itself is stored", async () => {
+  const quoting = JSON.stringify({
+    ...AGENT_GUIDE,
+    risk: { ...AGENT_GUIDE.risk, headline: `The test fixture ${FIXTURE_KEY} looks like a key` },
+  });
+  const { host, all } = await setup([quoting], { "optin:acme/api": true }, undefined, {
+    diff: DIFF_WITH_FIXTURE,
+  });
+  await until(
+    () => all()[0]?.status === "ready" || all()[0]?.status === "failed",
+    "the run to finish",
+  );
+  assert.equal(all()[0]?.status, "ready", all()[0]?.error ?? "");
+  assert.ok(host.data().storage["guide:acme/api#7"], "the guide is stored");
+});
+
+test("review.submit posts a comment quoting a secret-shaped string from the PR itself", async () => {
+  const { worker, calls } = await readyGuide({ diff: DIFF_WITH_FIXTURE });
+  const draft = {
+    ...DRAFT,
+    comments: [{ ...nth(DRAFT.comments, 0), body: `Is ${FIXTURE_KEY} a real key?` }],
+  };
+  await worker.request("review.save", { key: "acme/api#7", draft });
+  const result = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: "One question.",
+  });
+  assert.notEqual(result.outcome, "refused", JSON.stringify(result));
+  assert.ok(posts(calls).length > 0, "the review is posted");
 });
 
 test("a PR from outside the repository is not run automatically; a member's is", async () => {
