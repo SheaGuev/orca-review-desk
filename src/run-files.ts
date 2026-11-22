@@ -24,6 +24,8 @@ export type RunFiles = {
   diffs: ReadonlyMap<string, string>;
   /** Every prepared file (relative to the clone) to the PR path it holds; the run's index. */
   byPrepared: ReadonlyMap<string, string>;
+  /** The PR version of each prepared file, as read (latin1); the secret scan's known text. */
+  heads: readonly string[];
 };
 
 export type RunFilesInput = {
@@ -128,7 +130,7 @@ export async function writeRunFiles(input: RunFilesInput): Promise<RunFiles> {
     if (kinds.length) index.push(`${n}  ${kinds.join(" ")}  ${file.path}\n`);
   }
   await writeFile(join(cwd, dir, "index.txt"), index.join(""));
-  return { dir, diffs, byPrepared };
+  return { dir, diffs, byPrepared, heads: blobs.flatMap((b) => (b ? [b.toString("latin1")] : [])) };
 }
 
 /** Removes one run's folder, and `pr-tour-runs/` once no other run is in it; `.orca/` stays (Orca's). */

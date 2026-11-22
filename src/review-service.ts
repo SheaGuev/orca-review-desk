@@ -1,7 +1,7 @@
 // The review a guide tab drafts and posts: reading the draft, saving it, and submitting it after
 // checking it against the PR as it is now. Whatever is not posted stays in the draft.
 import type { Clones } from "./clones";
-import { inRanges } from "./diff";
+import { inRanges, type FileDiff } from "./diff";
 import { message } from "./errors";
 import { fetchPr, prFiles } from "./git";
 import { currentLogin, prDetails, type PrDetails } from "./github";
@@ -36,19 +36,37 @@ async function save(deps: Deps, key: string, draft: Draft): Promise<void> {
   deps.onPending(key, draft.comments.length);
 }
 
-/** The diff's files and comment lines at `head`: from the guide when it is current, else git. */
-async function diffAt(deps: Deps, guide: StoredGuide, d: PrDetails): Promise<DiffContext> {
-  if (guide.schema === SCHEMA_ID && guide.pr.commit === d.headRefOid) {
-    const ranges = guide.commentable;
-    return {
-      changed: Object.keys(ranges),
-      isCommentable: (path, line) => inRanges(ranges[path] ?? [], line),
-    };
-  }
+/** The PR's diff at `head`, from git. */
+async function prFilesAt(deps: Deps, guide: StoredGuide, d: PrDetails) {
   const clone = await deps.clones.find(guide.pr.repo);
   if (!clone) throw new Error(`No local clone of ${guide.pr.repo} in Orca to check the diff`);
-  return (await prFiles(clone.path, await fetchPr(clone, d))).ctx;
+  return prFiles(clone.path, await fetchPr(clone, d));
 }
+
+type DiffNow = {
+  ctx: DiffContext;
+  /** The diff's text, for the secret scan; read from git only when first asked. */
+  text: () => Promise<string>;
+};
+
+/** The diff's files and comment lines at `head`: from the guide when it is current, else git. */
+async function diffAt(deps: Deps, guide: StoredGuide, d: PrDetails): Promise<DiffNow> {
+  if (guide.schema === SCHEMA_ID && guide.pr.commit === d.headRefOid) {
+    const ranges = guide.commentable;
+    let text: Promise<string> | undefined;
+    return {
+      ctx: {
+        changed: Object.keys(ranges),
+        isCommentable: (path, line) => inRanges(ranges[path] ?? [], line),
+      },
+      text: () => (text ??= prFilesAt(deps, guide, d).then((p) => diffText(p.files))),
+    };
+  }
+  const { ctx, files } = await prFilesAt(deps, guide, d);
+  return { ctx, text: async () => diffText(files) };
+}
+
+const diffText = (files: readonly FileDiff[]): string => files.map((f) => f.text).join("");
 
 async function info(deps: Deps, key: string): Promise<ReviewInfo> {
   const guide = await deps.requireGuide(key);
@@ -102,10 +120,10 @@ async function submit(
     return result;
   };
   const now = await Promise.all([prDetails(repo, number), currentLogin()])
-    .then(async ([details, me]) => ({ details, me, ctx: await diffAt(deps, guide, details) }))
+    .then(async ([details, me]) => ({ details, me, diff: await diffAt(deps, guide, details) }))
     .catch((e: unknown) => message(e));
   if (typeof now === "string") return keepDraft({ outcome: "refused", message: now });
-  const stop = blocked(draft, { event, body }, now);
+  const stop = blocked(draft, { event, body }, { ...now, ctx: now.diff.ctx });
   if (stop) return keepDraft(stop);
   const head = now.details.headRefOid;
   const posted = await postReview({
@@ -115,6 +133,7 @@ async function submit(
     event,
     body,
     head,
+    known: now.diff.text,
     log: (text) => deps.log(`${key}: ${text}`),
   }).catch((e: unknown) => message(e));
   if (typeof posted === "string") return keepDraft({ outcome: "refused", message: posted });

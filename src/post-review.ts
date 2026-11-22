@@ -24,14 +24,22 @@ const post = (path: string, payload: unknown): Promise<string> =>
     timeoutMs: 60_000,
   });
 
-/** Throws, naming where, when the summary or a comment holds what looks like a secret. */
-function refuseSecrets(body: string, draft: Draft): void {
+/**
+ * Throws, naming where, when the summary or a comment holds what looks like a secret. A match the
+ * PR's own diff holds is public already, so it is no leak; the diff is only read when one is found.
+ */
+async function refuseSecrets(
+  body: string,
+  draft: Draft,
+  known: () => Promise<string>,
+): Promise<void> {
   const parts = [
     { where: "The summary", text: body },
     ...draft.comments.map((c) => ({ where: `The comment on ${c.path}`, text: c.body })),
   ];
   for (const { where, text } of parts) {
-    const kind = findSecret(text);
+    // Without the diff (no clone, git failed), every match counts.
+    const kind = findSecret(text) && findSecret(text, await known().catch(() => ""));
     if (kind)
       throw new Error(
         `${where} holds what looks like ${kind}, so nothing was posted. Remove it, then post again.`,
@@ -52,10 +60,12 @@ export async function postReview(input: {
   event: ReviewEvent;
   body: string;
   head: string;
+  /** The PR's diff text at `head`. */
+  known: () => Promise<string>;
   log: (text: string) => void;
 }): Promise<Posted> {
   const { repo, number, draft, event, body, head } = input;
-  refuseSecrets(body, draft);
+  await refuseSecrets(body, draft, input.known);
   const out = await post(
     `repos/${repo}/pulls/${number}/reviews`,
     reviewPayload(draft, event, body, head),

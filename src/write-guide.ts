@@ -232,9 +232,12 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
   };
 }
 
-/** Whatever is stored may be opened, shared or quoted into a review: no credentials in it. */
-function refuseSecrets(guide: PrGuide): void {
-  const secret = findSecret(JSON.stringify(guide));
+/**
+ * Whatever is stored may be opened, shared or quoted into a review: no credentials in it. `known`
+ * is the PR's own text (diff, PR versions, title, body), public already, so quoting it is no leak.
+ */
+function refuseSecrets(guide: PrGuide, known: string): void {
+  const secret = findSecret(JSON.stringify(guide), known);
   if (secret)
     throw new Error(
       `The agent's reply holds what looks like ${secret}, so the guide was not stored.`,
@@ -337,7 +340,7 @@ async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
       skipped: triage.skipped,
     },
   );
-  refuseSecrets(guide);
+  refuseSecrets(guide, [pr.title, pr.body, ...files.map((f) => f.text), ...run.heads].join("\n"));
   logReady(req, guide, started);
   return guide;
 }

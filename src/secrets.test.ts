@@ -24,3 +24,14 @@ test("ordinary text and near misses are not secrets", () => {
   ])
     assert.equal(findSecret(text), null, text);
 });
+
+test("a secret-shaped string the PR itself contains is not a leak", () => {
+  const fixture = "AKIAABCDEFGHIJKLMNOP";
+  const pr = `+const key = "${fixture}"; // a test fixture`;
+  assert.equal(findSecret(`The test uses ${fixture}.`, pr), null);
+  // Anything not in the PR is still caught, even beside a string that is.
+  const leaked = `ghp_${"z9".repeat(18)}`;
+  assert.equal(findSecret(`${fixture} and ${leaked}`, pr), "a GitHub token");
+  assert.equal(findSecret(`The test uses ${fixture}.`, "unrelated text"), "an AWS access key");
+  assert.equal(findSecret(`The test uses ${fixture}.`), "an AWS access key");
+});

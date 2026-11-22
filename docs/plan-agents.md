@@ -159,6 +159,15 @@ list to the prompt from the worker.
   names the kind ("a GitHub token"), never the value. `postReview` checks the summary and every
   comment before the first request and throws, so the guide tab shows "refused" with which part
   holds it; the draft is kept.
+- Secrets the PR itself holds: the scan guards against the agent leaking something from this
+  machine (keychain, environment), and what the PR contains is public on GitHub already. So
+  `findSecret(text, known)` checks every match of every pattern and passes over one found word for
+  word in `known`; anything else is still refused. The guide's `known` is every changed file's diff
+  (not only the part in the prompt), the PR versions `run-files.ts` already read, and the PR's
+  title and body. A review's `known` is the PR's diff at the head it posts to: the diff the line
+  check just read from git, or, when the stored guide is current (no git needed), read once only
+  if a match is found. Without the diff (no clone), every match counts. Found when PR #1's own
+  test fixture `AKIA...` was quoted and a finished guide was thrown away.
 - Trust: `authorAssociation` in `src/github.ts`; asked once per PR per worker session in
   `src/queue-check.ts` (a failed read is asked again next check), not stored. The rule is in
   `manualReason` (`src/queue-items.ts`), after the clone/opt-in/draft checks: "Author is not a
