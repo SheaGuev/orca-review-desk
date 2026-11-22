@@ -102,11 +102,23 @@
         "default": "claude",
         "enum": [
           "claude",
-          "codex"
+          "codex",
+          "cursor",
+          "copilot",
+          "gemini",
+          "droid",
+          "qwen",
+          "pi"
         ],
         "enumLabels": [
           "Claude Code",
-          "Codex"
+          "Codex",
+          "Cursor",
+          "GitHub Copilot",
+          "Gemini CLI",
+          "Factory Droid",
+          "Qwen Code",
+          "Pi"
         ]
       },
       {

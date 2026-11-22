@@ -32,13 +32,16 @@ export type AgentSpec = {
   label: string;
   binary: string;
   /**
-   * Passed `scripts/verify-agent.ts` on a real install: only verified agents are offered in
-   * Settings (`orca-plugin.json`) and accepted by `asHarness`.
+   * Passed `scripts/verify-agent.ts` on a real install. A record only: every agent in the table is
+   * offered in Settings, verified or not.
    */
   verified: boolean;
   /** "argv": the prompt is in the command line (`args` places it); else it goes to stdin. */
   promptDelivery: "stdin" | "argv";
-  /** argv agents: Linux allows 128 KB per argument, so the diff budget shrinks to fit. */
+  /**
+   * argv agents: Linux allows 128 KB per argument, so the diff budget shrinks to fit and a longer
+   * prompt is refused before the CLI runs.
+   */
   maxPromptChars?: number;
   /** Headless, read-only tools only. */
   args: (p: ArgsInput) => string[];
@@ -67,6 +70,11 @@ const STDIN_HINT = "Follow the instructions above and reply as they say.";
  * in the PR's text, since this counts characters.
  */
 const ARGV_PROMPT_CHARS = 100_000;
+/**
+ * Room an argv agent's diff budget keeps for the repair round, which repeats the prompt and adds
+ * the previous reply (cut to fit by `buildRepairPrompt`).
+ */
+export const REPAIR_REPLY_CHARS = 40_000;
 
 const tail = (text: string) => text.trim().split("\n").slice(-4).join(" ").slice(0, 400);
 
@@ -376,12 +384,13 @@ export function agentEnv(id: AgentId): Record<string, string> {
 
 /**
  * Characters of diff the prompt may carry for this agent, given the rest of the prompt
- * (`overhead`): argv agents fit the whole prompt in one argument.
+ * (`overhead`): argv agents fit the whole prompt in one argument, with room left for the repair
+ * round's previous reply.
  */
 export function diffBudget(id: AgentId, overhead: number): number {
   const max = AGENTS[id].maxPromptChars;
   if (max === undefined) return PROMPT_DIFF_BUDGET;
-  return Math.max(0, Math.min(PROMPT_DIFF_BUDGET, max - overhead));
+  return Math.max(0, Math.min(PROMPT_DIFF_BUDGET, max - overhead - REPAIR_REPLY_CHARS));
 }
 
 /** The agent's CLI is not on the PATH the worker runs it with. */
@@ -404,6 +413,11 @@ export async function runAgent(
   signal?: AbortSignal,
 ): Promise<AgentReply> {
   const spec = AGENTS[id];
+  const max = spec.maxPromptChars;
+  if (spec.promptDelivery === "argv" && max !== undefined && prompt.length > max)
+    throw new Error(
+      `The prompt is too long for ${spec.label}'s command line (${prompt.length.toLocaleString("en-US")} characters, at most ${max.toLocaleString("en-US")})`,
+    );
   if (!(await isInstalled(spec.binary))) throw new AgentMissing(spec.label, spec.binary);
   const dir = await mkdtemp(join(tmpdir(), "pr-tour-"));
   const outFile = join(dir, "last-message.txt");

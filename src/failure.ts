@@ -7,6 +7,8 @@ const REASONS: [RegExp, string][] = [
   [/^The agent's reply holds what looks like/, "reply held a secret"],
   // agent.ts (AgentMissing): the CLI is not on PATH.
   [/isn't installed/, "not installed"],
+  // agent.ts: an argv agent's prompt over one command-line argument.
+  [/too long for .*'s command line/, "prompt too long"],
   [/rate.?limit|\b429\b|too many requests|overloaded|usage limit/i, "rate limited"],
   [
     /not logged in|log ?in required|please (run )?\/?login|not signed in|invalid api key|authenticat|unauthori[sz]ed|\b401\b/i,
@@ -20,7 +22,7 @@ const REASONS: [RegExp, string][] = [
   ],
 ];
 
-/** "not installed", "rate limited", "not signed in", "timed out", "didn't match the format", a refusal, else "see logs". */
+/** "not installed", "prompt too long", "rate limited", "not signed in", "timed out", "didn't match the format", a refusal, else "see logs". */
 export function failureReason(error: string | null | undefined): string {
   if (!error) return "see logs";
   return REASONS.find(([re]) => re.test(error))?.[1] ?? "see logs";

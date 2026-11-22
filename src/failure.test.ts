@@ -26,5 +26,11 @@ test("a failed run's error becomes a short reason a person can act on", () => {
     failureReason("Codex isn't installed: no codex on PATH · install it, then Generate"),
     "not installed",
   );
+  assert.equal(
+    failureReason(
+      "The prompt is too long for Cursor's command line (123,456 characters, at most 100,000)",
+    ),
+    "prompt too long",
+  );
   assert.equal(failureReason(null), "see logs");
 });

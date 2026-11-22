@@ -5,7 +5,7 @@ import type { QueueItem } from "./protocol";
 
 test("settings of the wrong type fall back to their defaults", () => {
   const s = readSettings({
-    harness: "gemini",
+    harness: 3,
     model: 4,
     teams: "acme/pay, @acme/id",
     dailyLimit: "9",
@@ -27,10 +27,10 @@ test("the agent label names the CLI and the model, if one is set", () => {
   );
 });
 
-test("only verified agents can be chosen; any other falls back to Claude Code", () => {
-  assert.equal(asHarness("codex"), "codex");
-  assert.equal(asHarness("claude"), "claude");
-  for (const id of ["cursor", "copilot", "gemini", "droid", "qwen", "pi", "nope", 3, null])
+test("every agent in the table can be chosen; anything else falls back to Claude Code", () => {
+  for (const id of ["claude", "codex", "cursor", "copilot", "gemini", "droid", "qwen", "pi"])
+    assert.equal(asHarness(id), id);
+  for (const id of ["nope", 3, null])
     assert.equal(asHarness(id), "claude", `${String(id)} was accepted`);
   assert.equal(harnessName("codex"), "Codex");
   assert.equal(harnessName("gemini"), "Gemini CLI");

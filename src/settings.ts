@@ -18,9 +18,9 @@ export type Settings = {
   extraInstructions: string;
 };
 
-/** A verified agent's id (the ones Settings offers); anything else is Claude Code. */
+/** An agent's id from the table (all of them are in Settings); anything else is Claude Code. */
 export function asHarness(value: unknown): AgentId {
-  return AGENT_IDS.find((id) => id === value && AGENTS[id].verified) ?? "claude";
+  return AGENT_IDS.find((id) => id === value) ?? "claude";
 }
 
 const DEFAULT_TEAM_MIN_LINES = 200;

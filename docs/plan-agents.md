@@ -1,7 +1,7 @@
 # PR Tour: more agents, technical plan
 
-Status: agreed scope, Phases 0 to 5 built; claude and codex verified, the other six specs wait for
-`verify-agent` runs. Written 2026-11-22.
+Status: agreed scope, Phases 0 to 5 built; all eight agents enabled, claude and codex verified with
+`verify-agent`. Written 2026-11-22.
 
 Today PR Tour runs two agent CLIs, Claude Code and Codex (`src/agent.ts`). Users of other agents
 read that as "Claude Code only". This plan adds a first wave of eight agents and a repeatable way
@@ -38,8 +38,8 @@ a "custom command" harness, giving agents git history (`git log`, blame).
 | 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands; Claude loses `Bash` |
 | 2 | Safety | `src/exec.ts`, `src/agent.ts`, `src/github.ts`, `src/queue-items.ts`, `src/queue-check.ts`, new `src/secrets.ts`, new `src/git-guard.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/post-review.ts` | Done: clean agent env, secret scan of replies and reviews, auto-run only for trusted authors, `.git` tamper check |
 | 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `src/exec.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/worker-state.ts`, `src/failure.ts` | Done: `Harness` union became the `AGENTS` table; "isn't installed" notice; argv diff budget |
-| 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `scripts/verify-checks.ts` | Done: specs for cursor, copilot, gemini, droid, qwen, pi (unverified, not offered); conformance script |
-| 5 | Settings, README | `orca-plugin.json`, `README.md`, `THIRD_PARTY_NOTICES.md` | Done: Settings lists verified agents only; README and Orca credit |
+| 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `scripts/verify-checks.ts` | Done: specs for cursor, copilot, gemini, droid, qwen, pi (all offered; only claude, codex verified); conformance script |
+| 5 | Settings, README | `orca-plugin.json`, `README.md`, `THIRD_PARTY_NOTICES.md` | Done: Settings lists all eight agents; README and Orca credit |
 
 ## Phase 0: fixes (done, uncommitted)
 
@@ -196,11 +196,11 @@ export const AGENTS: Record<AgentId, AgentSpec> = { claude: …, codex: … };
 
 **As built** (differences from the above):
 
-- Extra fields: `verified` (passed `verify-agent`; only these are in Settings and accepted by
-  `asHarness`), `envWhen` (variables kept while a flag variable is on: Claude's Bedrock/Vertex) and
+- Extra fields: `verified` (passed `verify-agent`; a record only since all eight were enabled,
+  see §4), `envWhen` (variables kept while a flag variable is on: Claude's Bedrock/Vertex) and
   `toolEvents` (the reply reports tool calls; only Claude). `AGENT_IDS` lists the ids in order.
-- `asHarness` moved to `src/settings.ts`. The manifest's `enum`/`enumLabels` equal the *verified*
-  ids and labels (test in `src/agent.test.ts`), not the whole table.
+- `asHarness` moved to `src/settings.ts`. The manifest's `enum`/`enumLabels` equal the table's ids
+  and labels (test in `src/agent.test.ts`).
 - `runAgent` loops `for (attempt = 0; ; attempt++)` and stops unless `spec.retry` says otherwise;
   Claude's `args` drops `--strict-mcp-config` for `--disallowedTools mcp__*` when `attempt > 0`.
   `--settings {"disableAllHooks":true}` and `--permission-mode dontAsk` were already in Phase 1/2.
@@ -255,10 +255,21 @@ To confirm on a real install (open in the table above):
   calls, so coverage counts only the prompt for them, as for Codex.
 - Only claude and codex are `verified`. On this machine cursor refuses headless sign-in, pi has no
   provider key, and gemini, droid, qwen and copilot are not installed.
-- Open: the repair round's prompt (prompt + previous reply) can pass the argv limit on Linux for
-  cursor and copilot; `editor/parts.ts` still names only Claude Code and Codex in a guide's
-  provenance and coverage line (the frame cannot import `src/agent.ts`). Both matter only once an
-  argv or other agent is verified.
+- **All eight enabled** (owner's decision, 2026-11-22): agents not tested on this machine are offered
+  too. `verified` stays on `AgentSpec` but only records a real `verify-agent` pass (claude, codex);
+  Settings lists every id in table order with its label, and `asHarness` accepts any of them.
+- **Repair room for argv agents**: the repair round repeats the prompt and adds the previous reply,
+  so `diffBudget` keeps `REPAIR_REPLY_CHARS` (40,000) free:
+  `max(0, min(PROMPT_DIFF_BUDGET, maxPromptChars - overhead - REPAIR_REPLY_CHARS))`. The overhead is
+  about 11k characters for a 5-file PR and 13k for 20 files, so cursor and copilot get about 49k
+  and 47k of diff (100,000 - 13,000 - 40,000), against 180k for stdin agents.
+  `buildRepairPrompt(original, reply, problems, limit?)` cuts only the previous reply so the whole
+  prompt fits `limit` (`write-guide.ts` passes `maxPromptChars`); without a limit the reply is still
+  capped at 120,000. `runAgent` refuses an argv prompt over `maxPromptChars` before spawning
+  anything ("The prompt is too long for Cursor's command line (…)"), row reason "prompt too long".
+- Open: `editor/parts.ts` still names only Claude Code and Codex in a guide's provenance and
+  coverage line (the frame cannot import `src/agent.ts`), so a guide from another agent reads as
+  Claude Code's there.
 
 ### `verify-agent` (new `scripts/verify-agent.ts`)
 
@@ -293,8 +304,9 @@ in `scripts/verify-checks.ts`, tested. A `curl` can't be observed beyond the she
 ## 5. Settings and README
 
 - **Settings**: `Agent harness` lists the eight. `Model` placeholder stays "Agent default".
-  **As built**: lists only the verified agents (Claude Code, Codex); each other one is added with
-  its passing `verify-agent` run. README lists the six as "implemented, enabled once verified".
+  **As built**: first listed only the verified agents (Claude Code, Codex); now lists all eight
+  (see §4 As built). README names all eight and says Claude Code and Codex were checked with
+  `verify-agent`.
 - **README**: "What the agent can do" becomes one line per agent with its read-only mechanism (the
   last column of §4), plus "No agent gets a shell; PR Tour writes the PR's files for it to read".
   Install section: "one of: claude, codex, cursor-agent, copilot, gemini, droid, qwen, pi".

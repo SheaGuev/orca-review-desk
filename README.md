@@ -22,8 +22,9 @@ until you press **Post to GitHub**.
 ## Install
 
 You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and one agent CLI installed and
-signed in: `claude` (Claude Code) or `codex` (Codex). Cursor, GitHub Copilot, Gemini CLI, Factory
-Droid, Qwen Code and Pi are implemented and will be enabled once each is verified.
+signed in: `claude` (Claude Code), `codex` (Codex), `cursor-agent` (Cursor), `copilot` (GitHub
+Copilot), `gemini` (Gemini CLI), `droid` (Factory Droid), `qwen` (Qwen Code) or `pi` (Pi). Pick it
+in Settings. Claude Code and Codex have been checked end to end with `scripts/verify-agent.ts`.
 
 ```sh
 orca plugin install adamthewilliam/orca-pr-tour
@@ -112,6 +113,16 @@ PR's files for it to read.
 - Claude Code: `claude -p` with only `Read`, `Grep` and `Glob`, no MCP servers, no project settings
   or hooks, and no saved session.
 - Codex: `codex exec --sandbox read-only`, its own OS sandbox.
+- Cursor: `cursor-agent --print --mode ask`, its read-only mode; MCP servers stay off.
+- GitHub Copilot: `copilot --prompt` with only `view`, `glob` and `grep`; writes, shell, memory and
+  built-in MCP servers are denied.
+- Gemini CLI: `gemini --approval-mode plan`, its read-only mode.
+- Factory Droid: `droid exec --only-tools Read,Grep,Glob,LS`.
+- Qwen Code: `qwen --approval-mode plan`, its read-only mode.
+- Pi: `pi --print --tools read`, with no extensions, skills, context files or saved session.
+
+Cursor and GitHub Copilot take the prompt on the command line, so their prompts carry less diff
+(one argument holds about 100k characters); the rest is read from files.
 
 The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. Guides
 are written to `.pr-tour/` in the repo, which is added to `.git/info/exclude` so it never shows up

@@ -1,6 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { afterEach, assert, test } from "orca/testing";
-import { AGENTS, AgentMissing, agentCommand, diffBudget, runAgent, type AgentId } from "./agent";
+import {
+  AGENTS,
+  AgentMissing,
+  REPAIR_REPLY_CHARS,
+  agentCommand,
+  diffBudget,
+  runAgent,
+  type AgentId,
+} from "./agent";
+import { buildRepairPrompt } from "./prompt";
 import { PROMPT_DIFF_BUDGET } from "./diff";
 import { setRunner, type RunOptions, type RunResult } from "./exec";
 import { readSettings } from "./settings";
@@ -353,14 +362,18 @@ for (const [id, want] of Object.entries(ARGV) as [AgentId, (typeof ARGV)[AgentId
   });
 }
 
-test("only the verified agents are offered in Settings, with the table's labels", async () => {
+test("every agent in the table is offered in Settings, with the table's labels", async () => {
   const harness = (await manifestSettings()).find((s) => s.key === "harness");
-  const verified = (Object.keys(AGENTS) as AgentId[]).filter((id) => AGENTS[id].verified);
-  assert.deepEqual(verified, ["claude", "codex"]);
-  assert.deepEqual(harness?.enum, verified);
+  const ids = Object.keys(AGENTS) as AgentId[];
+  assert.deepEqual(harness?.enum, ids);
   assert.deepEqual(
     harness?.enumLabels,
-    verified.map((id) => AGENTS[id].label),
+    ids.map((id) => AGENTS[id].label),
+  );
+  // `verified` records a real verify-agent pass; it no longer hides an agent.
+  assert.deepEqual(
+    ids.filter((id) => AGENTS[id].verified),
+    ["claude", "codex"],
   );
   assert.equal(harness?.default, "claude");
 });
@@ -377,7 +390,8 @@ test("argv agents get a smaller diff budget that leaves room for the rest of the
   assert.equal(diffBudget("claude", 20_000), PROMPT_DIFF_BUDGET);
   assert.equal(diffBudget("codex", 500_000), PROMPT_DIFF_BUDGET);
   const max = AGENTS.cursor.maxPromptChars ?? 0;
-  assert.equal(diffBudget("cursor", 20_000), max - 20_000);
+  // Room is left for the repair round's previous reply, so that prompt fits one argument too.
+  assert.ok(diffBudget("cursor", 20_000) + 20_000 + REPAIR_REPLY_CHARS <= max);
   assert.equal(diffBudget("copilot", max + 1), 0, "never below nothing");
 });
 
@@ -437,4 +451,34 @@ test("a non-zero exit names the binary, the code and the end of its output", asy
     replyOf("pi", { code: 2, stdout: "", stderr: "No API key" }),
     /pi exited with 2: No API key/,
   );
+});
+
+test("an argv prompt over the agent's limit fails with a clear reason, without running it", async () => {
+  const calls: string[] = [];
+  setRunner(
+    async (cmd) => {
+      calls.push(cmd);
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+    () => true,
+  );
+  const max = AGENTS.cursor.maxPromptChars ?? 0;
+  await assert.rejects(
+    runAgent("cursor", "", "x".repeat(max + 1), "/repo"),
+    /too long for Cursor's command line/,
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("the repair prompt fits a limit by cutting the previous reply, never the instructions", () => {
+  const original = "o".repeat(50_000);
+  const reply = "r".repeat(120_000);
+  const limit = 50_000 + REPAIR_REPLY_CHARS;
+  const repair = buildRepairPrompt(original, reply, ["title: over 12 words"], limit);
+  assert.ok(repair.length <= limit, `${repair.length} > ${limit}`);
+  assert.ok(repair.startsWith(original));
+  assert.ok(repair.includes("title: over 12 words"));
+  assert.ok(repair.endsWith("Keep everything that was right."));
+  // Without a limit, nothing changes.
+  assert.ok(buildRepairPrompt(original, reply, []).includes("r".repeat(120_000)));
 });

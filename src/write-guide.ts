@@ -1,6 +1,6 @@
 // One agent run for one PR: fetch it, decide what the tour skips, build the prompt, ask the agent
 // (once more if its reply does not fit), and fill in everything the agent is never trusted with.
-import { diffBudget, runAgent, type AgentReply } from "./agent";
+import { AGENTS, diffBudget, runAgent, type AgentReply } from "./agent";
 import { enforceCoverage } from "./coverage";
 import {
   budgetDiff,
@@ -149,7 +149,7 @@ async function askAgent(
   const second = await runAgent(
     harness,
     model,
-    buildRepairPrompt(prompt, first.text, firstRead.problems),
+    buildRepairPrompt(prompt, first.text, firstRead.problems, AGENTS[harness].maxPromptChars),
     req.clone.path,
   );
   req.onReply?.(second);

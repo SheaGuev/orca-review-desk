@@ -197,16 +197,27 @@ export function buildPrompt(input: PromptInput): string {
   ].join("\n");
 }
 
-export function buildRepairPrompt(original: string, reply: string, problems: string[]): string {
-  return [
+/**
+ * The prompt for the second round. With a `limit` (argv agents), only the previous reply is cut so
+ * the whole prompt fits; the original prompt, the problems and the closing instruction stay whole.
+ */
+export function buildRepairPrompt(
+  original: string,
+  reply: string,
+  problems: string[],
+  limit?: number,
+): string {
+  const before = [
     original,
     "",
     "Your previous reply could not be used:",
     ...problems.slice(0, 40).map((p) => `- ${p}`),
     "",
     "Previous reply:",
-    reply.slice(0, 120_000),
-    "",
-    "Reply again with ONLY the corrected JSON object. Keep everything that was right.",
   ].join("\n");
+  const after =
+    "\n\nReply again with ONLY the corrected JSON object. Keep everything that was right.";
+  const room =
+    limit === undefined ? 120_000 : Math.max(0, limit - before.length - after.length - 1);
+  return `${before}\n${reply.slice(0, Math.min(120_000, room))}${after}`;
 }
