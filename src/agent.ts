@@ -5,19 +5,10 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AGENT_NAMES, type AgentId, type AgentNames } from "./agent-names";
 import { PROMPT_DIFF_BUDGET, type ToolCall } from "./diff";
 import { cleanEnv, isInstalled, run, type RunResult } from "./exec";
 import { asList, asObj, asString, isObj, parseJson } from "./json";
-
-export type AgentId =
-  | "claude"
-  | "codex"
-  | "cursor"
-  | "copilot"
-  | "gemini"
-  | "droid"
-  | "qwen"
-  | "pi";
 
 export type AgentReply = {
   text: string;
@@ -27,9 +18,8 @@ export type AgentReply = {
 
 type ArgsInput = { model: string; outFile: string; prompt: string; attempt: number };
 
-export type AgentSpec = {
-  /** "Claude Code": the CLI as a person names it. */
-  label: string;
+/** How an agent runs; its label and `toolEvents` come from `src/agent-names.ts`. */
+export type AgentSpec = AgentNames & {
   binary: string;
   /**
    * Passed `scripts/verify-agent.ts` on a real install. A record only: every agent in the table is
@@ -49,8 +39,6 @@ export type AgentSpec = {
   env: readonly string[];
   /** More variables to keep while the worker's environment has this flag on (set, not "0"/"false"). */
   envWhen?: Readonly<Record<string, readonly string[]>>;
-  /** Whether `reply` reports the tools the agent called, which coverage counts as files read. */
-  toolEvents: boolean;
   /** Final text and tool calls; throws a person-readable error. */
   reply: (result: RunResult, outFile: string) => Promise<AgentReply>;
   /** One more attempt after a known refusal, e.g. Claude's enterprise MCP config. */
@@ -142,7 +130,7 @@ export function claudeToolCalls(stdout: string): ToolCall[] {
 
 export const AGENTS: Record<AgentId, AgentSpec> = {
   claude: {
-    label: "Claude Code",
+    ...AGENT_NAMES.claude,
     binary: "claude",
     verified: true,
     promptDelivery: "stdin",
@@ -175,7 +163,6 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       CLAUDE_CODE_USE_BEDROCK: ["AWS_*"],
       CLAUDE_CODE_USE_VERTEX: ["GOOGLE_*", "GCLOUD_*", "CLOUDSDK_*", "VERTEX_*", "CLOUD_ML_REGION"],
     },
-    toolEvents: true,
     reply: async (result) => {
       // Claude's own error (such as "Not logged in") is in its result, even when it exits 1.
       const outcome = claudeResult(result.stdout);
@@ -190,7 +177,7 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       `${result.stdout}\n${result.stderr}`.includes(ENTERPRISE_MCP_REFUSAL),
   },
   codex: {
-    label: "Codex",
+    ...AGENT_NAMES.codex,
     binary: "codex",
     verified: true,
     promptDelivery: "stdin",
@@ -206,14 +193,13 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       "-",
     ],
     env: ["OPENAI_*", "CODEX_*"],
-    toolEvents: false,
     reply: async (result, outFile) => {
       if (result.code !== 0) throw failed("codex", result);
       return { text: await readFile(outFile, "utf8"), toolCalls: [] };
     },
   },
   cursor: {
-    label: "Cursor",
+    ...AGENT_NAMES.cursor,
     binary: "cursor-agent",
     verified: false,
     promptDelivery: "argv",
@@ -230,11 +216,10 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       prompt,
     ],
     env: ["CURSOR_*"],
-    toolEvents: false,
     reply: jsonReply("cursor-agent", "result"),
   },
   copilot: {
-    label: "GitHub Copilot",
+    ...AGENT_NAMES.copilot,
     binary: "copilot",
     verified: false,
     promptDelivery: "argv",
@@ -253,11 +238,10 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     ],
     // Its own sign-in; GH_TOKEN and GITHUB_TOKEN never reach an agent.
     env: ["COPILOT_*"],
-    toolEvents: false,
     reply: textReply("copilot"),
   },
   gemini: {
-    label: "Gemini CLI",
+    ...AGENT_NAMES.gemini,
     binary: "gemini",
     verified: false,
     promptDelivery: "stdin",
@@ -272,11 +256,10 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       ...withModel("-m", model),
     ],
     env: ["GEMINI_*", "GOOGLE_*"],
-    toolEvents: false,
     reply: jsonReply("gemini", "response"),
   },
   droid: {
-    label: "Factory Droid",
+    ...AGENT_NAMES.droid,
     binary: "droid",
     verified: false,
     promptDelivery: "stdin",
@@ -290,11 +273,10 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       ...withModel("-m", model),
     ],
     env: ["FACTORY_*"],
-    toolEvents: false,
     reply: jsonReply("droid", "result"),
   },
   qwen: {
-    label: "Qwen Code",
+    ...AGENT_NAMES.qwen,
     binary: "qwen",
     verified: false,
     promptDelivery: "stdin",
@@ -309,11 +291,10 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     ],
     // Qwen Code also signs in with an OpenAI-compatible key and base URL.
     env: ["QWEN_*", "DASHSCOPE_*", "OPENAI_*"],
-    toolEvents: false,
     reply: jsonReply("qwen", "response"),
   },
   pi: {
-    label: "Pi",
+    ...AGENT_NAMES.pi,
     binary: "pi",
     verified: false,
     promptDelivery: "stdin",
@@ -341,22 +322,9 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       "MISTRAL_*",
       "CEREBRAS_*",
     ],
-    toolEvents: false,
     reply: textReply("pi"),
   },
 };
-
-/** Every agent in the table, in its order. */
-export const AGENT_IDS: readonly AgentId[] = [
-  "claude",
-  "codex",
-  "cursor",
-  "copilot",
-  "gemini",
-  "droid",
-  "qwen",
-  "pi",
-];
 
 /** The command line for an agent; the prompt is in it only for argv agents. */
 export function agentCommand(

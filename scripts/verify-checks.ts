@@ -1,6 +1,6 @@
 // The pure parts of `verify-agent.ts`: its arguments, the fixture PR, and how each check reads
 // what the run left behind. Tested in verify-checks.test.ts; the script itself needs a real CLI.
-import { AGENT_IDS, type AgentId } from "../src/agent";
+import { AGENT_IDS, type AgentId } from "../src/agent-names";
 import type { ToolCall } from "../src/diff";
 
 /** Put where a PR author could hide it: the description and a changed file. */

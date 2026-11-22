@@ -10,6 +10,7 @@ import {
   type SkipReason,
   type StopDepth,
 } from "../src/schema";
+import { agentNames } from "../src/agent-names";
 import { prKey } from "../src/repo";
 import { h, prose } from "./dom";
 
@@ -195,14 +196,16 @@ export function coverageLine(guide: PrGuide): HTMLElement | null {
   const c = guide.coverage;
   if (!c?.notRead.length) return null;
   const total = c.notRead.length + new Set([...c.inPrompt, ...c.readByAgent]).size;
-  const codex = guide.generatedBy.harness === "codex";
+  const agent = agentNames(guide.generatedBy.harness);
   return h(
     "p",
     { class: "coverage small", role: "note" },
     h("strong", {}, `Agent read ${total - c.notRead.length} of ${total} files`),
     ` · not read: `,
     ...c.notRead.flatMap((f, i) => [i ? ", " : "", h("span", { class: "mono" }, f)]),
-    codex ? ". Codex does not report which files it opened, so only the prompt counts." : "",
+    agent && !agent.toolEvents
+      ? `. ${agent.label} does not report which files it opened, so only the prompt counts.`
+      : "",
   );
 }
 
@@ -219,7 +222,7 @@ function when(iso: string): string {
 export function provenance(guide: PrGuide): (Node | string)[] {
   const g = guide.generatedBy;
   return [
-    `${g.harness === "codex" ? "Codex" : "Claude Code"}${g.model ? ` · ${g.model}` : ""} · ${when(g.at)} · `,
+    `${agentNames(g.harness)?.label ?? g.harness}${g.model ? ` · ${g.model}` : ""} · ${when(g.at)} · `,
     h("span", { class: "mono" }, guide.pr.commit.slice(0, 7)),
   ];
 }

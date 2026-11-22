@@ -267,9 +267,9 @@ To confirm on a real install (open in the table above):
   prompt fits `limit` (`write-guide.ts` passes `maxPromptChars`); without a limit the reply is still
   capped at 120,000. `runAgent` refuses an argv prompt over `maxPromptChars` before spawning
   anything ("The prompt is too long for Cursor's command line (…)"), row reason "prompt too long".
-- Open: `editor/parts.ts` still names only Claude Code and Codex in a guide's provenance and
-  coverage line (the frame cannot import `src/agent.ts`), so a guide from another agent reads as
-  Claude Code's there.
+- Fixed: each agent's label and `toolEvents` live in `src/agent-names.ts` (no Node imports), which
+  `src/agent.ts` builds `AGENTS` from and `editor/parts.ts` reads, so a guide's provenance and
+  coverage note name whichever agent wrote it.
 
 ### `verify-agent` (new `scripts/verify-agent.ts`)
 

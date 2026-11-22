@@ -1,7 +1,8 @@
 // The plugin's settings as the worker uses them. The keys and defaults mirror `contributes.settings`
 // in orca-plugin.json; Orca fills declared defaults in, so the ones here only cover a value of the
 // wrong type.
-import { AGENTS, AGENT_IDS, type AgentId } from "./agent";
+import { AGENTS } from "./agent";
+import { AGENT_IDS, type AgentId } from "./agent-names";
 import { parseTeams } from "./repo";
 
 export type Settings = {

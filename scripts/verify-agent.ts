@@ -7,7 +7,8 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AGENTS, type AgentId, type AgentReply, type AgentSpec } from "../src/agent";
+import { AGENTS, type AgentReply, type AgentSpec } from "../src/agent";
+import type { AgentId } from "../src/agent-names";
 import type { ToolCall } from "../src/diff";
 import { message } from "../src/errors";
 import { loadLoginPath, run, runOk } from "../src/exec";

@@ -7,8 +7,8 @@ import {
   agentCommand,
   diffBudget,
   runAgent,
-  type AgentId,
 } from "./agent";
+import type { AgentId } from "./agent-names";
 import { buildRepairPrompt } from "./prompt";
 import { PROMPT_DIFF_BUDGET } from "./diff";
 import { setRunner, type RunOptions, type RunResult } from "./exec";
