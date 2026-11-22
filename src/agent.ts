@@ -17,12 +17,19 @@ export function asHarness(value: unknown): Harness {
 const CLAUDE_TOOLS_AVAILABLE = "Read,Grep,Glob,Bash";
 const CLAUDE_TOOLS_ALLOWED = "Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git log:*)";
 const AGENT_TIMEOUT_MS = 15 * 60_000;
+/** Claude refuses `--strict-mcp-config` when an enterprise MCP config is present. */
+const ENTERPRISE_MCP_REFUSAL =
+  "You cannot use --strict-mcp-config when an enterprise MCP config is present";
 
-/** The command line for a harness; the prompt goes to stdin. */
+/**
+ * The command line for a harness; the prompt goes to stdin. `strictMcp: false` is the fallback for
+ * enterprise-managed MCP configs: the managed servers load, so their tools are denied instead.
+ */
 export function agentCommand(
   harness: Harness,
   model: string,
   outFile: string,
+  strictMcp = true,
 ): { cmd: string; args: string[] } {
   const m = model.trim();
   if (harness === "codex") {
@@ -52,7 +59,7 @@ export function agentCommand(
       "--allowedTools",
       CLAUDE_TOOLS_ALLOWED,
       // No MCP servers, no project settings or hooks from the PR's repo, no saved session, no skills.
-      "--strict-mcp-config",
+      ...(strictMcp ? ["--strict-mcp-config"] : ["--disallowedTools", "mcp__*"]),
       "--setting-sources",
       "user",
       "--no-session-persistence",
@@ -117,13 +124,18 @@ export async function runAgent(
   const dir = await mkdtemp(join(tmpdir(), "pr-tour-"));
   const outFile = join(dir, "last-message.txt");
   try {
-    const { cmd, args } = agentCommand(harness, model, outFile);
-    const result = await run(cmd, args, {
-      cwd,
-      input: prompt,
-      timeoutMs: AGENT_TIMEOUT_MS,
-      signal,
-    });
+    const attempt = (strictMcp: boolean) => {
+      const { cmd, args } = agentCommand(harness, model, outFile, strictMcp);
+      return run(cmd, args, { cwd, input: prompt, timeoutMs: AGENT_TIMEOUT_MS, signal });
+    };
+    let result = await attempt(true);
+    // Retry once without strict MCP only for Claude's enterprise-policy refusal.
+    if (
+      harness === "claude" &&
+      result.code !== 0 &&
+      `${result.stdout}\n${result.stderr}`.includes(ENTERPRISE_MCP_REFUSAL)
+    )
+      result = await attempt(false);
     if (harness === "codex") {
       if (result.code !== 0)
         throw new Error(

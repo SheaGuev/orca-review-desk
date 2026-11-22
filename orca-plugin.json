@@ -114,7 +114,7 @@
         "title": "Model",
         "description": "Passed to the agent as its model flag. Leave empty for the agent's default.",
         "type": "string",
-        "default": "claude-opus-5-5",
+        "default": "",
         "maxLength": 100,
         "placeholder": "Agent default"
       },
