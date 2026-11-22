@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { OrcaWorkerApi } from "orca/worker";
 import type { Clones } from "./clones";
 import { fail, message } from "./errors";
-import { hideGuideFolder } from "./git";
+import { hidePrTourFolders } from "./git";
 import type { StoredGuide } from "./store";
 
 export type Opener = {
@@ -48,8 +48,8 @@ export function createOpener(deps: {
       await mkdir(join(ws.path, ".pr-tour"), { recursive: true });
       // Guides used to be written as "<n>.prtour.json"; drop that copy so only one stays.
       await rm(join(ws.path, `.pr-tour/${guide.pr.number}.prtour.json`), { force: true });
-      await hideGuideFolder(ws.path).catch((e: unknown) =>
-        deps.log(`could not add .pr-tour/ to git's exclude list: ${message(e)}`),
+      await hidePrTourFolders(ws.path).catch((e: unknown) =>
+        deps.log(`could not add PR Tour's folders to git's exclude list: ${message(e)}`),
       );
       await writeFile(join(ws.path, rel), `${JSON.stringify(guide, null, 2)}\n`);
       await host.call("workspace.open", { workspaceId: ws.id });

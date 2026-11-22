@@ -389,6 +389,7 @@ test("Review opens the guide file in the repo workspace and remembers what you s
   assert.equal(written.pr.number, 7);
   const exclude = await readFile(join(dir, ".git/info/exclude"), "utf8");
   assert.ok(exclude.includes(".pr-tour/"), "the guide folder stays out of git status");
+  assert.ok(exclude.includes(".orca/pr-tour-runs/"), "run files stay out of git status");
   assert.equal(
     (host.data().storage["meta:acme/api#7"] as { lastViewedCommit?: string }).lastViewedCommit,
     PR_VIEW.headRefOid,
@@ -457,7 +458,7 @@ test("coverage records the files the agent opened with its tools", async () => {
           {
             type: "tool_use",
             name: "Read",
-            input: { file_path: ".pr-tour/runs/7/head/0002.txt" },
+            input: { file_path: ".orca/pr-tour-runs/7/head/0002.txt" },
           },
         ],
       },
@@ -494,7 +495,7 @@ test("the agent reads the PR's files from the run folder, removed once the run e
     },
   );
   await until(() => calls.some((c) => c.cmd === "claude"), "the agent run");
-  const run = join(dir, ".pr-tour/runs/7");
+  const run = join(dir, ".orca/pr-tour-runs/7");
   try {
     assert.equal(
       await readFile(join(run, "index.txt"), "utf8"),
@@ -514,7 +515,7 @@ test("the agent reads the PR's files from the run folder, removed once the run e
     assert.equal(batch.length, 1, "one git process for every PR version");
     assert.ok(batch[0]?.options?.input?.startsWith("refs/pr-tour/pr-7:src/SessionDataAccess.ts\n"));
     const prompt = calls.find((c) => c.cmd === "claude")?.options?.input ?? "";
-    assert.ok(prompt.includes("`.pr-tour/runs/7/head/`"));
+    assert.ok(prompt.includes("`.orca/pr-tour-runs/7/head/`"));
     // The PR's own diff says "diff --git"; nothing else may name git.
     const ours = prompt.replace(/<diff>[\s\S]*<\/diff>/, "");
     assert.ok(!/\bgit /.test(ours), "no git command in the prompt");
@@ -522,13 +523,13 @@ test("the agent reads the PR's files from the run folder, removed once the run e
     release();
   }
   await until(() => all()[0]?.status === "ready", "the guide");
-  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after success");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after success");
 });
 
 test("the run folder is removed when the run fails or is stopped", async () => {
   const failed = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
   await until(() => failed.all()[0]?.status === "failed", "the failed run");
-  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after a failure");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after a failure");
   await current?.deactivate();
   current = null;
   await rm(dir, { recursive: true, force: true });
@@ -546,19 +547,24 @@ test("the run folder is removed when the run fails or is stopped", async () => {
     },
   );
   await until(() => stopped.all()[0]?.status === "failed", "the stopped run");
-  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after a stop");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after a stop");
 });
 
 test("run folders left by a crash are removed when the worker starts; guides stay", async () => {
   const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
     before: async (clone) => {
-      await mkdir(join(clone, ".pr-tour/runs/3/head"), { recursive: true });
-      await writeFile(join(clone, ".pr-tour/runs/3/head/0001.txt"), "left by a crash");
+      await mkdir(join(clone, ".orca/pr-tour-runs/3/head"), { recursive: true });
+      await writeFile(join(clone, ".orca/pr-tour-runs/3/head/0001.txt"), "left by a crash");
+      await writeFile(join(clone, ".orca/drops"), "Orca's own");
+      // Where runs were written before they moved under .orca/.
+      await mkdir(join(clone, ".pr-tour/runs/2/head"), { recursive: true });
+      await writeFile(join(clone, ".pr-tour/runs/2/head/0001.txt"), "left by a crash");
       await writeFile(join(clone, ".pr-tour/pr-3.prtour.json"), "{}");
     },
   });
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
   assert.deepEqual(await readdir(join(dir, ".pr-tour")), ["pr-3.prtour.json"]);
+  assert.deepEqual(await readdir(join(dir, ".orca")), ["drops"], "the rest of .orca/ stays");
 });
 
 test("after the repair round, stray lines and missing notes are settled instead of failing", async () => {
@@ -632,6 +638,20 @@ test("a GitHub failure shows as the notice, with the last check time", async () 
   const notice = latest()?.notice;
   assert.equal(notice?.tone, "warning");
   assert.ok(notice?.text.startsWith("Couldn't reach GitHub · last checked "), notice?.text);
+});
+
+test("GitHub's rate limit is named as such, not as GitHub being unreachable", async () => {
+  const { worker, latest } = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  setRunner(async () => ({
+    stdout: "",
+    stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+    code: 1,
+  }));
+  await worker.request("queue.refresh");
+  const notice = latest()?.notice;
+  assert.equal(notice?.tone, "warning");
+  assert.ok(notice?.text.startsWith("GitHub rate limit reached · last checked "), notice?.text);
 });
 
 test("an agent with no sign-in shows as the notice", async () => {

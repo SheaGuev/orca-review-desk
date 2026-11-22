@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { linesByFile, splitDiff, type FileDiff } from "./diff";
 import { run, runOk } from "./exec";
 import { LOCKFILES, repoSlugFromRemote } from "./repo";
+import { RUNS } from "./run-files";
 import type { DiffContext } from "./schema";
 
 /** A repository added to Orca as a project, on this machine. */
@@ -117,12 +118,21 @@ export async function gitCommonDir(workspacePath: string): Promise<string> {
   return isAbsolute(common) ? common : join(workspacePath, common);
 }
 
-/** Adds `.pr-tour/` to the repository's own exclude list, so guides never show in `git status`. */
-export async function hideGuideFolder(workspacePath: string): Promise<void> {
+/** What PR Tour writes in a clone: guides, and each run's files. */
+const HIDDEN = [".pr-tour/", `${RUNS}/`];
+
+/**
+ * Adds PR Tour's folders to the repository's own exclude list, so guides and run files never
+ * show in `git status`.
+ */
+export async function hidePrTourFolders(workspacePath: string): Promise<void> {
   const infoDir = join(await gitCommonDir(workspacePath), "info");
   const exclude = join(infoDir, "exclude");
   const current = await readFile(exclude, "utf8").catch(() => "");
-  if (current.split("\n").some((l) => l.trim() === ".pr-tour/")) return;
+  const lines = new Set(current.split("\n").map((l) => l.trim()));
+  const missing = HIDDEN.filter((p) => !lines.has(p));
+  if (!missing.length) return;
   await mkdir(infoDir, { recursive: true });
-  await appendFile(exclude, `${current.endsWith("\n") || current === "" ? "" : "\n"}.pr-tour/\n`);
+  const sep = current.endsWith("\n") || current === "" ? "" : "\n";
+  await appendFile(exclude, `${sep}${missing.map((p) => `${p}\n`).join("")}`);
 }

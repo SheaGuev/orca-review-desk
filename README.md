@@ -125,8 +125,9 @@ Cursor and GitHub Copilot take the prompt on the command line, so their prompts 
 (one argument holds about 100k characters); the rest is read from files.
 
 The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. Guides
-are written to `.pr-tour/` in the repo, which is added to `.git/info/exclude` so it never shows up
-in `git status`.
+are written to `.pr-tour/` in the repo. During a run, the PR's files the agent reads are written to
+`.orca/pr-tour-runs/<pr>/` and removed when it ends. Both folders are added to `.git/info/exclude`
+so they never show up in `git status`.
 
 ## Limits
 

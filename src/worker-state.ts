@@ -70,7 +70,7 @@ const someOf = (paths: readonly string[]): string =>
     : paths.join(", ");
 
 /**
- * The one status line the panel shows: a tampering run, GitHub unreachable, agent not installed or
+ * The one status line the panel shows: a tampering run, GitHub unreachable or rate-limited, agent not installed or
  * signed out, daily limit.
  */
 function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null {
@@ -81,11 +81,15 @@ function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null 
       text: `The run for ${tampered.key.slice(tampered.repo.length)} changed ${someOf(tampered.paths)} in ${tampered.repo} · automatic guides are off until you have checked the clone`,
       turnOn: tampered.repo,
     };
-  if (state.lastError)
+  if (state.lastError) {
+    const what = /rate limit/i.test(state.lastError)
+      ? "GitHub rate limit reached"
+      : "Couldn't reach GitHub";
     return {
       tone: "warning",
-      text: `Couldn't reach GitHub${checkedAt === null ? "" : ` · last checked ${clock(checkedAt)}`}`,
+      text: `${what}${checkedAt === null ? "" : ` · last checked ${clock(checkedAt)}`}`,
     };
+  }
   if (state.agentMissing)
     return {
       tone: "danger",

@@ -29,7 +29,8 @@ orca plugin dev request . queue.refresh --json
    daily limit, which resets at local midnight.
 3. **Fetch and prompt.** The PR is fetched into `refs/pr-tour/*`. Whole per-file diffs go in the
    prompt up to 180k characters (source first, then config, tests, docs; lockfiles left out). The
-   rest are listed with the command to read each.
+   rest are written to `.orca/pr-tour-runs/<pr>/` with the PR's version of each changed file, and
+   the agent reads them there.
 4. **Check the reply** against `prguide/v2` (`src/schema.ts`): headline word limits, every file and
    finding line must be in the diff, every changed file needs a note, and the tour covers each
    changed file once. A reply that doesn't fit gets one repair round.

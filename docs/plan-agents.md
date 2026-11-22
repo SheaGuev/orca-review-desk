@@ -35,7 +35,7 @@ a "custom command" harness, giving agents git history (`git log`, blame).
 | Phase | Area | Files | Change |
 | --- | --- | --- | --- |
 | 0 | Agent runs | `src/agent.ts`, `orca-plugin.json` | Done: model default `""`; Claude retries once without `--strict-mcp-config` under an enterprise MCP config |
-| 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands; Claude loses `Bash` |
+| 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.orca/pr-tour-runs/<pr>/` (first `.pr-tour/runs/<pr>/`); prompt drops git commands; Claude loses `Bash` |
 | 2 | Safety | `src/exec.ts`, `src/agent.ts`, `src/github.ts`, `src/queue-items.ts`, `src/queue-check.ts`, new `src/secrets.ts`, new `src/git-guard.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/post-review.ts` | Done: clean agent env, secret scan of replies and reviews, auto-run only for trusted authors, `.git` tamper check |
 | 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `src/exec.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/worker-state.ts`, `src/failure.ts` | Done: `Harness` union became the `AGENTS` table; "isn't installed" notice; argv diff budget |
 | 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `scripts/verify-checks.ts` | Done: specs for cursor, copilot, gemini, droid, qwen, pi (all offered; only claude, codex verified); conformance script |
@@ -97,15 +97,24 @@ list to the prompt from the worker.
   only files that got something.
 - Cleanup is a `finally` in `writeGuide` (`src/write-guide.ts`), not in `runAgent`: the repair
   round runs the agent a second time on the same files. An empty `runs/` is removed too.
-- Stale runs: on worker start, `.pr-tour/runs/` is removed in every local git project Orca lists
-  (`project.list`), before the first check.
+- Stale runs: on worker start, `.orca/pr-tour-runs/` (and the old `.pr-tour/runs/`) is removed in
+  every local git project Orca lists (`project.list`), before the first check.
 - Coverage maps through the index kept in memory (`RunFiles.byPrepared`), not by re-reading
   `index.txt`. Parsing of `git show` / `git diff` Bash calls is gone; `Read` of a changed path in
   the clone still counts.
 - `git cat-file --batch` output is read as latin1 (`RunOptions.stdoutEncoding` in `src/exec.ts`) so
   object sizes are byte counts and files in any encoding are written byte for byte.
-- `writeRunFiles` refuses when `.pr-tour` or `.pr-tour/runs` is a link (a repository could commit
-  one), and adds `.pr-tour/` to `.git/info/exclude` before writing.
+- `writeRunFiles` refuses when `.orca` or `.orca/pr-tour-runs` is a link (a repository could commit
+  one), and `.pr-tour/` and `.orca/pr-tour-runs/` are added to `.git/info/exclude` before writing.
+  Cleanup skips a linked `.orca` too, so it never deletes outside the clone.
+- **Run files moved from `.pr-tour/runs/<pr>/` to `.orca/pr-tour-runs/<pr>/`.** Orca's dev watcher
+  reloads a plugin loaded with `orca plugin dev` on any change in its folder outside `.git`, `.orca`
+  and `node_modules`. Reviewing PR Tour's own PR in its dev folder, writing the run files reloaded
+  the plugin, which killed the run; the worker resumed it, wrote again and looped every ~4.5 s,
+  burning the GitHub rate limit. `.orca/` is where Orca keeps its own per-project temp files
+  (`.orca/drops`, `.orca/issue-command`), so PR Tour never removes `.orca/` itself, only
+  `pr-tour-runs/<pr>` and an empty `pr-tour-runs/`. Guides stay in `.pr-tour/`; the worker removes
+  a `.pr-tour/runs/` left by an older version at start.
 - Head versions are skipped for every file in the triage's skipped list (lockfiles, generated,
   whitespace-only, pure renames), binaries and deletions.
 

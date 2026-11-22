@@ -261,6 +261,9 @@ export default defineCheck({
   offline: {
     requests: answer(withNotice("Couldn't reach GitHub · last checked 14:02", "warning")),
   },
+  rateLimited: {
+    requests: answer(withNotice("GitHub rate limit reached · last checked 14:02", "warning")),
+  },
   limit: {
     requests: answer(
       withNotice("Automatic guides paused until tomorrow · Generate still works", "warning"),
