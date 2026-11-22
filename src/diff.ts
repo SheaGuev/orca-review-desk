@@ -175,65 +175,27 @@ export function budgetDiff(
 
 export type ToolCall = { name: string; input: Record<string, unknown> };
 
-/** Splits a shell command into words, honouring quotes; good enough for the git calls agents make. */
-function words(command: string): string[] {
-  const out: string[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|([^\s"'|;&]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(command))) out.push(m[1] ?? m[2] ?? m[3] ?? "");
-  return out;
-}
-
 /**
- * Changed files the agent opened with its tools: `Read` of a path, or a `git show <ref>:<path>`,
- * `git diff … -- <path>` style Bash call (also with `git -C <dir>`, and a folder pathspec).
+ * Changed files the agent opened with its `Read` tool: a changed path in the clone, or a file the
+ * worker prepared for the run, mapped back through `prepared` (prepared path, relative to the
+ * clone, to the PR path it holds).
  */
 export function filesReadByAgent(
   calls: readonly ToolCall[],
   changed: readonly string[],
   cwd: string,
+  prepared: ReadonlyMap<string, string> = new Map(),
 ): string[] {
   const set = new Set(changed);
   const read = new Set<string>();
   const root = cwd.endsWith("/") ? cwd : `${cwd}/`;
-  const rel = (p: string) => {
-    let path = p.startsWith(root) ? p.slice(root.length) : p;
-    if (path.startsWith("./")) path = path.slice(2);
-    return path;
-  };
-  const mark = (raw: string) => {
-    const p = rel(raw);
-    if (set.has(p)) {
-      read.add(p);
-      return;
-    }
-    // A folder pathspec (`-- src/auth/`) covers the files below it.
-    const dir = p.endsWith("/") ? p : `${p}/`;
-    if (p && p !== "." && !p.includes(":"))
-      for (const f of changed) if (f.startsWith(dir)) read.add(f);
-  };
   for (const call of calls) {
-    if (call.name === "Read" && typeof call.input.file_path === "string")
-      mark(call.input.file_path);
-    if (call.name !== "Bash" || typeof call.input.command !== "string") continue;
-    const w = words(call.input.command);
-    for (let i = 0; i < w.length; i++) {
-      if (w[i] !== "git") continue;
-      let j = i + 1;
-      while (w[j] === "-C" || w[j] === "-c" || w[j]?.startsWith("--git-dir"))
-        j += w[j] === "-C" || w[j] === "-c" ? 2 : 1;
-      const sub = w[j];
-      if (sub !== "show" && sub !== "diff" && sub !== "log") continue;
-      let afterDashes = false;
-      for (let k = j + 1; k < w.length && w[k] !== "git"; k++) {
-        const t = w[k];
-        if (t === undefined) continue;
-        if (t === "--") afterDashes = true;
-        else if (afterDashes) mark(t);
-        else if (sub === "show" && /^[^-][^:]*:.+/.test(t)) mark(t.slice(t.indexOf(":") + 1));
-        else if (!t.startsWith("-") && set.has(rel(t))) mark(t);
-      }
-    }
+    if (call.name !== "Read" || typeof call.input.file_path !== "string") continue;
+    let path = call.input.file_path;
+    if (path.startsWith(root)) path = path.slice(root.length);
+    if (path.startsWith("./")) path = path.slice(2);
+    const pr = prepared.get(path) ?? path;
+    if (set.has(pr)) read.add(pr);
   }
   return changed.filter((f) => read.has(f));
 }

@@ -55,6 +55,18 @@ function fakeTools(opts: {
     if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:old-owner/api.git\n");
     if (cmd === "git" && args.includes("--git-common-dir")) return ok(".git\n");
     if (cmd === "git" && args.includes("fetch") && opts.objects) opts.objects.present = true;
+    // The PR's version of each file asked for, one per input line.
+    if (cmd === "git" && args.includes("--batch"))
+      return ok(
+        (options?.input ?? "")
+          .split("\n")
+          .filter(Boolean)
+          .map((spec) => {
+            const blob = `PR version of ${spec.slice(spec.indexOf(":") + 1)}\n`;
+            return `${"b".repeat(40)} blob ${blob.length}\n${blob}\n`;
+          })
+          .join(""),
+      );
     if (cmd === "git" && args.includes("cat-file") && opts.objects?.present === false)
       return { stdout: "", stderr: "fatal: Not a valid object name", code: 128 };
     if (cmd === "git" && args.includes("--name-status"))
@@ -207,9 +219,12 @@ async function setup(
     objects?: { present: boolean };
     overrides?: string;
     agentGate?: Promise<void>;
+    /** Runs on the clone's folder before the worker starts. */
+    before?: (dir: string) => Promise<void>;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
+  await more.before?.(dir);
   const calls = fakeTools({ agentReplies, agentEvents, ...more });
   const host = mockHost({
     settings: SETTINGS,
@@ -293,12 +308,12 @@ test("turning a repository on writes the guide with worker-filled facts", async 
 
   const agent = calls.find((c) => c.cmd === "claude") as Call;
   assert.ok(agent.args.includes("--model") && agent.args.includes("claude-opus-5-5"));
-  assert.ok(agent.args.join(" ").includes("Bash(git show:*)"), "read-only tools only");
-  assert.equal(
-    agent.args[agent.args.indexOf("--tools") + 1],
-    "Read,Grep,Glob,Bash",
-    "no write tools exist in the run",
-  );
+  const flag = (name: string) => agent.args[agent.args.indexOf(name) + 1];
+  assert.equal(flag("--tools"), "Read,Grep,Glob", "no shell and no write tools exist in the run");
+  assert.equal(flag("--allowedTools"), "Read,Grep,Glob");
+  assert.ok(!agent.args.join(" ").includes("Bash"), "no shell, not even for git");
+  assert.equal(flag("--permission-mode"), "dontAsk");
+  assert.equal(flag("--settings"), '{"disableAllHooks":true}', "the person's hooks don't run");
   assert.ok(
     agent.args.includes("--strict-mcp-config") && agent.args.includes("--no-session-persistence"),
   );
@@ -421,8 +436,8 @@ test("coverage records the files the agent opened with its tools", async () => {
         content: [
           {
             type: "tool_use",
-            name: "Bash",
-            input: { command: "git show refs/pr-tour/pr-7:src/SessionDataAccess.ts" },
+            name: "Read",
+            input: { file_path: ".pr-tour/runs/7/head/0002.txt" },
           },
         ],
       },
@@ -442,9 +457,88 @@ test("coverage records the files the agent opened with its tools", async () => {
       "src/SessionDataAccess.test.ts",
       "README.md",
     ],
-    readByAgent: ["src/SessionDataAccess.ts"],
+    readByAgent: ["src/CustomerService.ts"],
     notRead: [],
   });
+});
+
+test("the agent reads the PR's files from the run folder, removed once the run ends", async () => {
+  let release = (): void => undefined;
+  const agentGate = new Promise<void>((resolve) => (release = resolve));
+  const { calls, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      agentGate,
+    },
+  );
+  await until(() => calls.some((c) => c.cmd === "claude"), "the agent run");
+  const run = join(dir, ".pr-tour/runs/7");
+  try {
+    assert.equal(
+      await readFile(join(run, "index.txt"), "utf8"),
+      [
+        "0001  head  src/SessionDataAccess.ts",
+        "0002  head  src/CustomerService.ts",
+        "0003  head  src/SessionDataAccess.test.ts",
+        "0004  head  README.md",
+        "",
+      ].join("\n"),
+    );
+    assert.equal(
+      await readFile(join(run, "head/0002.txt"), "utf8"),
+      "PR version of src/CustomerService.ts\n",
+    );
+    const batch = calls.filter((c) => c.cmd === "git" && c.args.includes("--batch"));
+    assert.equal(batch.length, 1, "one git process for every PR version");
+    assert.ok(batch[0]?.options?.input?.startsWith("refs/pr-tour/pr-7:src/SessionDataAccess.ts\n"));
+    const prompt = calls.find((c) => c.cmd === "claude")?.options?.input ?? "";
+    assert.ok(prompt.includes("`.pr-tour/runs/7/head/`"));
+    // The PR's own diff says "diff --git"; nothing else may name git.
+    const ours = prompt.replace(/<diff>[\s\S]*<\/diff>/, "");
+    assert.ok(!/\bgit /.test(ours), "no git command in the prompt");
+  } finally {
+    release();
+  }
+  await until(() => all()[0]?.status === "ready", "the guide");
+  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after success");
+});
+
+test("the run folder is removed when the run fails or is stopped", async () => {
+  const failed = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
+  await until(() => failed.all()[0]?.status === "failed", "the failed run");
+  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after a failure");
+  await current?.deactivate();
+  current = null;
+  await rm(dir, { recursive: true, force: true });
+
+  const stoppedGate = Promise.reject(
+    Object.assign(new Error("claude was stopped"), { code: "cancelled" }),
+  );
+  stoppedGate.catch(() => undefined);
+  const stopped = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      agentGate: stoppedGate,
+    },
+  );
+  await until(() => stopped.all()[0]?.status === "failed", "the stopped run");
+  assert.deepEqual(await readdir(join(dir, ".pr-tour")), [], "removed after a stop");
+});
+
+test("run folders left by a crash are removed when the worker starts; guides stay", async () => {
+  const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    before: async (clone) => {
+      await mkdir(join(clone, ".pr-tour/runs/3/head"), { recursive: true });
+      await writeFile(join(clone, ".pr-tour/runs/3/head/0001.txt"), "left by a crash");
+      await writeFile(join(clone, ".pr-tour/pr-3.prtour.json"), "{}");
+    },
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.deepEqual(await readdir(join(dir, ".pr-tour")), ["pr-3.prtour.json"]);
 });
 
 test("after the repair round, stray lines and missing notes are settled instead of failing", async () => {

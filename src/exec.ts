@@ -2,7 +2,14 @@
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 
-export type RunOptions = { cwd?: string; input?: string; timeoutMs?: number; signal?: AbortSignal };
+export type RunOptions = {
+  cwd?: string;
+  input?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** How stdout is decoded; "latin1" keeps one character per byte, for byte counts and raw files. */
+  stdoutEncoding?: "utf8" | "latin1";
+};
 export type RunResult = { stdout: string; stderr: string; code: number };
 export type Runner = (cmd: string, args: string[], options?: RunOptions) => Promise<RunResult>;
 
@@ -57,7 +64,9 @@ const defaultRunner: Runner = (cmd, args, options = {}) =>
       );
     }, options.timeoutMs ?? 120_000);
     options.signal?.addEventListener("abort", onAbort);
-    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stdout
+      .setEncoding(options.stdoutEncoding ?? "utf8")
+      .on("data", (d: string) => (stdout += d));
     child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
     child.on("error", (error) => finish(() => reject(error)));
     child.on("close", (code) => finish(() => resolve({ stdout, stderr, code: code ?? 1 })));

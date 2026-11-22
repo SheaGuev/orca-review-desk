@@ -1,6 +1,6 @@
 # PR Tour: more agents, technical plan
 
-Status: agreed scope, Phase 0 done (uncommitted), nothing else started. Written 2026-11-22.
+Status: agreed scope, Phases 0 and 1 done, nothing else started. Written 2026-11-22.
 
 Today PR Tour runs two agent CLIs, Claude Code and Codex (`src/agent.ts`). Users of other agents
 read that as "Claude Code only". This plan adds a first wave of eight agents and a repeatable way
@@ -34,7 +34,7 @@ a "custom command" harness, giving agents git history (`git log`, blame).
 | Phase | Area | Files | Change |
 | --- | --- | --- | --- |
 | 0 | Agent runs | `src/agent.ts`, `orca-plugin.json` | Done: model default `""`; Claude retries once without `--strict-mcp-config` under an enterprise MCP config |
-| 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts` | PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands |
+| 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands; Claude loses `Bash` |
 | 2 | Safety | `src/exec.ts`, `src/github.ts`, `src/queue.ts`, new `src/secrets.ts`, `src/write-guide.ts`, `src/post-review.ts` | Clean agent env, secret scan of replies, auto-run only for trusted authors, `.git` tamper check |
 | 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `orca-plugin.json` | `Harness` union becomes a spec table; still claude and codex only |
 | 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `README.md` | Conformance script; add cursor, copilot, gemini, droid, qwen, pi |
@@ -87,6 +87,25 @@ report no tool calls keep today's behaviour: files not in the prompt show as not
 
 Lost capability: the agent can no longer look at history. If guides miss it, add the PR's commit
 list to the prompt from the worker.
+
+**As built** (differences from the above):
+
+- `index.txt` lines are `<n>  <kinds>  <pr path>`, e.g. `0003  diff head  src/big.ts`: one line per
+  file with both kinds it has, path last so a path with spaces stays unambiguous. Numbers count
+  only files that got something.
+- Cleanup is a `finally` in `writeGuide` (`src/write-guide.ts`), not in `runAgent`: the repair
+  round runs the agent a second time on the same files. An empty `runs/` is removed too.
+- Stale runs: on worker start, `.pr-tour/runs/` is removed in every local git project Orca lists
+  (`project.list`), before the first check.
+- Coverage maps through the index kept in memory (`RunFiles.byPrepared`), not by re-reading
+  `index.txt`. Parsing of `git show` / `git diff` Bash calls is gone; `Read` of a changed path in
+  the clone still counts.
+- `git cat-file --batch` output is read as latin1 (`RunOptions.stdoutEncoding` in `src/exec.ts`) so
+  object sizes are byte counts and files in any encoding are written byte for byte.
+- `writeRunFiles` refuses when `.pr-tour` or `.pr-tour/runs` is a link (a repository could commit
+  one), and adds `.pr-tour/` to `.git/info/exclude` before writing.
+- Head versions are skipped for every file in the triage's skipped list (lockfiles, generated,
+  whitespace-only, pure renames), binaries and deletions.
 
 ## 2. Safety layers that work on every OS
 

@@ -15,14 +15,17 @@ import {
   diffUpTo,
   fetchPr,
   hasCommit,
+  hideGuideFolder,
   LOCKFILE_EXCLUDES,
   logBetween,
   prFiles,
   type Clone,
+  type PrRefs,
 } from "./git";
 import { myReviewComments, type PrDetails } from "./github";
 import type { PrPlace, Triage } from "./pr-data";
 import { buildPrompt, buildRepairPrompt, type SinceInput } from "./prompt";
+import { removeRunFiles, writeRunFiles, type RunFiles } from "./run-files";
 import {
   extractJson,
   parseAgentGuide,
@@ -171,6 +174,8 @@ type Facts = {
   /** Paths whose whole diff was in the prompt. */
   inPrompt: string[];
   toolCalls: readonly ToolCall[];
+  /** The run's prepared files, to the PR path each holds. */
+  prepared: ReadonlyMap<string, string>;
   skipped: SkippedFile[];
 };
 
@@ -210,7 +215,7 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
     coverage: coverage(
       changed,
       facts.inPrompt,
-      filesReadByAgent(facts.toolCalls, changed, req.clone.path),
+      filesReadByAgent(facts.toolCalls, changed, req.clone.path, facts.prepared),
     ),
     commentable: Object.fromEntries(
       changed.map((f) => [f, toRanges(facts.lines.get(f) ?? new Set())]),
@@ -221,8 +226,41 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
 
 /** Fetches the PR, runs the agent and returns the finished guide; throws when the run fails. */
 export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
-  const { key, repo, clone, pr, settings } = req;
+  const { clone, pr } = req;
   const refs = await fetchPr(clone, pr);
+  try {
+    return await runWithFiles(req, refs);
+  } finally {
+    // Success, failure or a stopped run: the PR's files never outlive it.
+    await removeRunFiles(clone.path, pr.number).catch((e: unknown) =>
+      req.log(`${req.key}: could not remove the run's files: ${message(e)}`),
+    );
+  }
+}
+
+/** What the agent would otherwise fetch with git: the PR's files and the diffs left out. */
+async function prepareRun(
+  req: GuideRequest,
+  refs: PrRefs,
+  files: readonly FileDiff[],
+  outside: readonly FileDiff[],
+  skipped: readonly SkippedFile[],
+): Promise<RunFiles> {
+  await hideGuideFolder(req.clone.path).catch((e: unknown) =>
+    req.log(`could not add .pr-tour/ to git's exclude list: ${message(e)}`),
+  );
+  return writeRunFiles({
+    cwd: req.clone.path,
+    pr: req.pr.number,
+    headRef: refs.head,
+    files,
+    outside,
+    skipped: new Set(skipped.map((f) => f.path)),
+  });
+}
+
+async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
+  const { key, repo, clone, pr, settings } = req;
   const { files, lines, ctx: base } = await prFiles(clone.path, refs);
   const changed = base.changed;
   // Decided before the run, so the agent spends no stop on them and can't skim a risky file.
@@ -233,6 +271,7 @@ export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
   };
   const budget = budgetDiff(files);
   const since = await sinceInput(req, refs.head);
+  const run = await prepareRun(req, refs, files, budget.outside, triage.skipped);
   const prompt = buildPrompt({
     repo,
     pr,
@@ -240,8 +279,7 @@ export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
     outside: budget.outside,
     since,
     extraInstructions: settings.extraInstructions,
-    headRef: refs.head,
-    baseRef: refs.base,
+    run,
     skipped: triage.skipped,
     risky: rules.risky,
   });
@@ -261,6 +299,7 @@ export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
       since,
       inPrompt: budget.inPrompt.map((f) => f.path),
       toolCalls,
+      prepared: run.byPrepared,
       skipped: triage.skipped,
     },
   );

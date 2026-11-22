@@ -13,9 +13,8 @@ export function asHarness(value: unknown): Harness {
   return value === "codex" ? "codex" : "claude";
 }
 
-/** Only these built-in tools exist in the run; Bash is pre-approved for read-only git only. */
-const CLAUDE_TOOLS_AVAILABLE = "Read,Grep,Glob,Bash";
-const CLAUDE_TOOLS_ALLOWED = "Read,Grep,Glob,Bash(git diff:*),Bash(git show:*),Bash(git log:*)";
+/** Only these built-in tools exist in the run, all pre-approved; no shell (the worker writes the PR's files). */
+const CLAUDE_TOOLS = "Read,Grep,Glob";
 const AGENT_TIMEOUT_MS = 15 * 60_000;
 /** Claude refuses `--strict-mcp-config` when an enterprise MCP config is present. */
 const ENTERPRISE_MCP_REFUSAL =
@@ -55,13 +54,19 @@ export function agentCommand(
       "--output-format",
       "json",
       "--tools",
-      CLAUDE_TOOLS_AVAILABLE,
+      CLAUDE_TOOLS,
       "--allowedTools",
-      CLAUDE_TOOLS_ALLOWED,
+      CLAUDE_TOOLS,
+      // Anything else that would ask for permission is denied, not waited on.
+      "--permission-mode",
+      "dontAsk",
       // No MCP servers, no project settings or hooks from the PR's repo, no saved session, no skills.
       ...(strictMcp ? ["--strict-mcp-config"] : ["--disallowedTools", "mcp__*"]),
       "--setting-sources",
       "user",
+      // The person's own hooks (user settings) have no business running here either.
+      "--settings",
+      JSON.stringify({ disableAllHooks: true }),
       "--no-session-persistence",
       "--disable-slash-commands",
     ],

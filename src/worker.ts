@@ -19,6 +19,7 @@ import { createQueueCheck } from "./queue-check";
 import { buildItem, type PrFound, type Tracked } from "./queue-items";
 import { prKey } from "./repo";
 import { registerRequests } from "./requests";
+import { removeStaleRuns } from "./run-files";
 import { createReviewService, type ReviewService } from "./review-service";
 import { createRunQueue, type RunQueue } from "./run-queue";
 import { readSettings } from "./settings";
@@ -195,6 +196,17 @@ async function createParts(orca: OrcaWorkerApi) {
   return { parts, prData, tours, settingsNow };
 }
 
+/** Run folders left by a crash hold a PR's files; cleared before any run starts. */
+async function clearOldRuns(orca: OrcaWorkerApi, log: (text: string) => void): Promise<void> {
+  try {
+    const { projects } = await orca.host.call("project.list");
+    const local = projects.filter((p) => p.kind === "git" && (!p.hostId || p.hostId === "local"));
+    await removeStaleRuns(local.map((p) => p.path));
+  } catch (e) {
+    log(`could not remove old run files: ${message(e)}`);
+  }
+}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const { parts, prData, tours, settingsNow } = await createParts(orca);
   const { state, store, clones, focus, opener, log, publish, itemFor } = parts;
@@ -239,6 +251,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   });
 
   await loadLoginPath();
+  await clearOldRuns(orca, log);
   const poll = setInterval(() => void refresh(), POLL_MS);
   stopTimers = () => {
     clearInterval(poll);
