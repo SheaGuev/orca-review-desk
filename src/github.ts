@@ -11,6 +11,8 @@ export type SearchHit = {
   url: string;
   draft: boolean;
   updatedAt: string;
+  /** GitHub's `author_association` when the search gave one, so it need not be asked per PR. */
+  association?: string;
 };
 
 export type PrFile = { path: string; additions: number; deletions: number };
@@ -105,6 +107,10 @@ export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
     if (!isObj(item) || typeof item.number !== "number") return [];
     const repo = repoSlugFromApiUrl(asString(item.repository_url));
     if (!repo) return [];
+    const association =
+      typeof item.author_association === "string"
+        ? item.author_association.trim().toUpperCase()
+        : "";
     return [
       {
         repo,
@@ -114,6 +120,7 @@ export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
         url: asString(item.html_url),
         draft: item.draft === true,
         updatedAt: asString(item.updated_at),
+        ...(association ? { association } : {}),
       },
     ];
   });

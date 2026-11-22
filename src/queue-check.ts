@@ -51,9 +51,16 @@ async function detailsOf(asked: Asked, key: string, f: Found): Promise<PrDetails
   return details;
 }
 
-/** The PR author's association with the repo; not asked for your own PRs, which are trusted. */
+/**
+ * The PR author's association with the repo, from the search hit when it carries one; not asked
+ * for your own PRs, which are trusted.
+ */
 async function associationOf(asked: Asked, key: string, f: Found): Promise<string | null> {
   if (f.lane === "authored") return null;
+  if (f.hit.association) {
+    asked.associations.set(key, f.hit.association);
+    return f.hit.association;
+  }
   const known = asked.associations.get(key);
   if (known) return known;
   const read = await authorAssociation(f.hit.repo, f.hit.number);

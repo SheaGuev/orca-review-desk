@@ -439,6 +439,8 @@ refresh 22 and a quick restart 42 again, up to 6 at once. Now:
   guide runs wait; Refresh still tries, and a check that works ends the wait. The notice reads
   "GitHub rate limit reached · checks resume at HH:MM" when GitHub gave the time, else "… · last
   checked HH:MM".
+- **Author associations** come with each search hit (`author_association` in `search/issues`), so
+  no `repos/<o>/<r>/pulls/<n>` call per PR; that lookup remains only for a hit without one.
 - **Author associations** are saved with the list (`SavedPr.association`, optional), so a restart
   does not ask them again.
 - **3 at once**: every `gh` call in `src/github.ts` waits for one of `GH_AT_ONCE` (3) slots, and the

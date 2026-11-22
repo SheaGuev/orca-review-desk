@@ -140,6 +140,8 @@ function fakeTools(opts: {
         updated_at: opts.updatedAt?.[number] ?? "2026-11-19T00:00:00Z",
         user: { login: "sam" },
         repository_url: "https://api.github.com/repos/acme/api",
+        // GitHub's search results carry it; null leaves it out, as an older answer would.
+        ...(opts.association === null ? {} : { author_association: opts.association ?? "MEMBER" }),
       }));
       return ok(
         JSON.stringify({
@@ -823,17 +825,33 @@ test("after a restart, author lookups are not asked again", async () => {
     () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
     "check",
   );
-  assert.equal(associationCalls(first.calls).length, 1);
+  assert.equal(associationCalls(first.calls).length, 0, "the search carries it");
   const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
   (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
   await first.worker.deactivate();
 
-  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  // This search lacks it, so only the saved answer spares the lookup.
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, {
+    association: null,
+  });
   await until(
     () => second.latest()?.checking === false && prViews(second.calls).length > 0,
     "the check after the restart",
   );
   assert.equal(associationCalls(second.calls).length, 0, "the saved answer is used");
+});
+
+test("the author's association comes with the search; no lookup per PR", async () => {
+  const { calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [7, 8, 9],
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.equal(associationCalls(calls).length, 0);
+  assert.ok(
+    latest()
+      ?.queue.concat(latest()?.notQueued ?? [])
+      .every((i) => i.manualReason !== "Couldn't check the author's access"),
+  );
 });
 
 test("at most 3 GitHub calls are in flight at once", async () => {
@@ -1492,8 +1510,8 @@ test("a PR from outside the repository is not run automatically; a member's is",
   assert.equal(outside.calls.filter((c) => c.cmd === "claude").length, 0);
   assert.equal(outside.latest()?.notQueued[0]?.manualReason, "Author is not a collaborator");
   assert.ok(
-    outside.calls.some((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7"),
-    "author_association comes from the REST API",
+    !outside.calls.some((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7"),
+    "author_association comes with the search",
   );
   // Generate still works by hand.
   await outside.worker.request("guide.generate", { key: "acme/api#7" });
@@ -1501,8 +1519,8 @@ test("a PR from outside the repository is not run automatically; a member's is",
   await outside.worker.request("queue.refresh");
   assert.equal(
     outside.calls.filter((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7").length,
-    1,
-    "asked once, then cached",
+    0,
+    "never asked per PR",
   );
   await current?.deactivate();
   current = null;
