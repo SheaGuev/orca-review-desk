@@ -3,8 +3,8 @@
 import { mapLimit } from "./cache";
 import type { Clones } from "./clones";
 import { message } from "./errors";
-import { prDetails, requestTimes, type PrDetails } from "./github";
-import { searchLanes, type PrFound, type Tracked } from "./queue-items";
+import { authorAssociation, prDetails, requestTimes, type PrDetails } from "./github";
+import { searchLanes, type Found, type PrFound, type Tracked } from "./queue-items";
 import type { Settings } from "./settings";
 import type { Store } from "./store";
 import type { WorkerState } from "./worker-state";
@@ -27,6 +27,23 @@ type Deps = {
 
 /** Review-request times per PR head, so GitHub is asked again only after a push. */
 type RequestTimes = Map<string, { head: string; at: number }>;
+
+/** What the checks remember between them, so GitHub is not asked the same thing each time. */
+type Asked = {
+  requested: RequestTimes;
+  /** Each PR's author_association once read; one that could not be read is asked again. */
+  associations: Map<string, string>;
+};
+
+/** The PR author's association with the repo; not asked for your own PRs, which are trusted. */
+async function associationOf(asked: Asked, key: string, f: Found): Promise<string | null> {
+  if (f.lane === "authored") return null;
+  const known = asked.associations.get(key);
+  if (known) return known;
+  const read = await authorAssociation(f.hit.repo, f.hit.number);
+  if (read) asked.associations.set(key, read);
+  return read;
+}
 
 /**
  * Asks GitHub when each PR's review was requested, one GraphQL query per repository, for the
@@ -75,7 +92,7 @@ async function readRepos(deps: Deps, built: readonly Tracked[]): Promise<void> {
   });
 }
 
-async function check(deps: Deps, requested: RequestTimes): Promise<void> {
+async function check(deps: Deps, asked: Asked): Promise<void> {
   const { state, store } = deps;
   state.settings = await deps.readSettings();
   state.runsToday = await store.runsToday();
@@ -85,10 +102,12 @@ async function check(deps: Deps, requested: RequestTimes): Promise<void> {
     repo: f.hit.repo,
     details: await prDetails(f.hit.repo, f.hit.number),
     found: f,
+    association: await associationOf(asked, key, f),
   }));
+  const { requested } = asked;
   await askRequestTimes(deps, requested, fetched);
   // One at a time: a guide stored without its skipped files asks git, which may fetch.
-  const built = await mapLimit(fetched, 1, ({ key, repo, details: d, found: f }) =>
+  const built = await mapLimit(fetched, 1, ({ key, repo, details: d, found: f, association }) =>
     deps.itemFor({
       key,
       repo,
@@ -100,6 +119,7 @@ async function check(deps: Deps, requested: RequestTimes): Promise<void> {
       requestedAt:
         requested.get(key)?.at ??
         (Date.parse(d.createdAt) || Date.parse(f.hit.updatedAt) || Date.now()),
+      association,
     }),
   );
   state.tracked.clear();
@@ -110,6 +130,6 @@ async function check(deps: Deps, requested: RequestTimes): Promise<void> {
 }
 
 export function createQueueCheck(deps: Deps): () => Promise<void> {
-  const requested: RequestTimes = new Map();
-  return () => check(deps, requested);
+  const asked: Asked = { requested: new Map(), associations: new Map() };
+  return () => check(deps, asked);
 }

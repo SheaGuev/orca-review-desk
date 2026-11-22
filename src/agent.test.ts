@@ -67,3 +67,70 @@ test("any other Claude failure is not retried", async () => {
   await assert.rejects(runAgent("claude", "", "prompt", "/repo"), /something else broke/);
   assert.equal(calls.length, 1);
 });
+
+/** Runs the agent with a fake CLI and answers the environment it was given. */
+async function envOfRun(harness: "claude" | "codex"): Promise<Record<string, string> | undefined> {
+  let seen: Record<string, string> | undefined;
+  setRunner(async (_cmd, _args, options) => {
+    seen = options?.env;
+    return {
+      code: 0,
+      stdout: JSON.stringify({ type: "result", is_error: false, result: "the guide" }),
+      stderr: "",
+    };
+  });
+  await runAgent(harness, "", "prompt", "/repo").catch(() => undefined);
+  return seen;
+}
+
+test("the agent gets a clean environment: its own variables, never the worker's tokens", async () => {
+  const set = {
+    GH_TOKEN: "gh-secret",
+    GITHUB_TOKEN: "github-secret",
+    GH_ENTERPRISE_TOKEN: "ghe-secret",
+    NPM_TOKEN: "npm-secret",
+    AWS_SECRET_ACCESS_KEY: "aws-secret",
+    SOME_SERVICE_SECRET: "other-secret",
+    ANTHROPIC_API_KEY: "anthropic-key",
+    CLAUDE_CONFIG_DIR: "/claude-config",
+    OPENAI_API_KEY: "openai-key",
+    CODEX_HOME: "/codex-home",
+    HOME: process.env.HOME ?? "/home/me",
+    LANG: "en_GB.UTF-8",
+    LC_ALL: "en_GB.UTF-8",
+  };
+  const saved = Object.fromEntries(Object.keys(set).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, set);
+  try {
+    const claude = await envOfRun("claude");
+    assert.ok(claude, "the agent run is given its own env");
+    for (const k of [
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "GH_ENTERPRISE_TOKEN",
+      "NPM_TOKEN",
+      "AWS_SECRET_ACCESS_KEY",
+      "SOME_SERVICE_SECRET",
+      "OPENAI_API_KEY",
+      "CODEX_HOME",
+    ])
+      assert.equal(claude[k], undefined, `${k} reached Claude`);
+    assert.equal(claude.ANTHROPIC_API_KEY, "anthropic-key");
+    assert.equal(claude.CLAUDE_CONFIG_DIR, "/claude-config");
+    assert.equal(claude.HOME, set.HOME);
+    assert.equal(claude.LANG, "en_GB.UTF-8");
+    assert.equal(claude.LC_ALL, "en_GB.UTF-8");
+    assert.ok(claude.PATH, "PATH is kept");
+
+    const codex = await envOfRun("codex");
+    assert.equal(codex?.OPENAI_API_KEY, "openai-key");
+    assert.equal(codex?.CODEX_HOME, "/codex-home");
+    assert.equal(codex?.ANTHROPIC_API_KEY, undefined);
+    assert.equal(codex?.GH_TOKEN, undefined);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});

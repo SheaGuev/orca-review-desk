@@ -145,6 +145,23 @@ export function prDetailsFrom(raw: unknown, what: string): PrDetails {
   };
 }
 
+/**
+ * GitHub's `author_association` for a PR (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...),
+ * which `gh pr view --json` does not offer; null when it could not be read.
+ */
+export async function authorAssociation(repo: string, number: number): Promise<string | null> {
+  try {
+    const out = await runOk(
+      "gh",
+      ["api", `repos/${repo}/pulls/${number}`, "--jq", ".author_association"],
+      { timeoutMs: 30_000 },
+    );
+    return out.trim().toUpperCase() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Your own inline review comments on a PR, for "Since your last review". */
 export async function myReviewComments(repo: string, number: number): Promise<ReviewComment[]> {
   const me = await currentLogin();

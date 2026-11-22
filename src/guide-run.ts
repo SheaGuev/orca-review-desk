@@ -2,6 +2,7 @@
 // queue row up to date. A failure is recorded on the row, never thrown.
 import type { Clones } from "./clones";
 import { message } from "./errors";
+import { GitTampered } from "./git-guard";
 import { prDetails } from "./github";
 import type { PrData } from "./pr-data";
 import { parsePrKey } from "./repo";
@@ -101,12 +102,39 @@ async function finish(
     );
 }
 
+/**
+ * A run changed its clone's git config or hooks: automatic runs stop for the whole repository
+ * (stored, so a restart keeps them off) until the person turns it back on.
+ */
+async function stopAutomatic(deps: Deps, key: string, paths: readonly string[]): Promise<void> {
+  const { state, store } = deps;
+  const repo = parsePrKey(key)?.repo;
+  if (!repo) return;
+  await store.setOptIn(repo, false);
+  state.tampered = { key, repo, paths };
+  const known = state.repos.get(repo);
+  if (known) state.repos.set(repo, { ...known, optIn: false });
+  for (let i = state.queued.length - 1; i >= 0; i--) {
+    const q = state.queued[i];
+    if (q?.automatic && parsePrKey(q.key)?.repo === repo) {
+      state.queued.splice(i, 1);
+      patchItem(state, q.key, { status: "none" });
+    }
+  }
+  for (const t of state.tracked.values()) {
+    if (t.item.repo !== repo) continue;
+    t.auto = false;
+    t.item = { ...t.item, manualReason: t.item.manualReason ?? "Repository turned off" };
+  }
+}
+
 /** Records a failed run on the PR's row and in storage, against the head it was started for. */
 async function fail(deps: Deps, key: string, e: unknown, head: string | undefined): Promise<void> {
   const { state, store } = deps;
   const error = message(e);
   if (SIGNED_OUT.test(error)) state.agentSignedOut = true;
   deps.log(`${key}: ${error}`);
+  if (e instanceof GitTampered) await stopAutomatic(deps, key, e.paths);
   const meta = await store.meta(key);
   await store.setMeta(key, { ...meta, error, errorCommit: head });
   patchItem(state, key, { status: "failed", error });

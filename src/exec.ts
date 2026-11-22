@@ -9,6 +9,8 @@ export type RunOptions = {
   signal?: AbortSignal;
   /** How stdout is decoded; "latin1" keeps one character per byte, for byte counts and raw files. */
   stdoutEncoding?: "utf8" | "latin1";
+  /** The whole environment of the run, in place of the worker's own (see `cleanEnv`). */
+  env?: Record<string, string>;
 };
 export type RunResult = { stdout: string; stderr: string; code: number };
 export type Runner = (cmd: string, args: string[], options?: RunOptions) => Promise<RunResult>;
@@ -32,7 +34,7 @@ const defaultRunner: Runner = (cmd, args, options = {}) =>
     const user = userName();
     const child = spawn(cmd, args, {
       cwd: options.cwd,
-      env: {
+      env: options.env ?? {
         ...process.env,
         ...(pathValue ? { PATH: pathValue } : {}),
         ...(user ? { USER: user } : {}),
@@ -73,6 +75,82 @@ const defaultRunner: Runner = (cmd, args, options = {}) =>
     child.stdin.on("error", () => {});
     child.stdin.end(options.input ?? "");
   });
+
+/**
+ * What every agent run keeps of the worker's environment: where things are, who runs them, how
+ * text is shown, and how to reach the network (proxies, certificates). Windows' own variables are
+ * here too; names compare without case, as Windows does. A trailing `*` matches a prefix.
+ */
+const BASE_ENV = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  "LANGUAGE",
+  "LC_*",
+  "TERM",
+  "TZ",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "XDG_RUNTIME_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+];
+
+/** Never passed on, whatever a harness asks for: they reach GitHub, npm or AWS as the person. */
+const NEVER_ENV = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "NPM_TOKEN",
+  "AWS_*",
+];
+
+const matches = (name: string, patterns: readonly string[]): boolean => {
+  const upper = name.toUpperCase();
+  return patterns.some((p) => (p.endsWith("*") ? upper.startsWith(p.slice(0, -1)) : upper === p));
+};
+
+/**
+ * The environment for an agent run: the login-shell PATH, the base variables above and the
+ * harness's own (`keep`, such as `ANTHROPIC_*`); nothing else of the worker's, so a token in it
+ * never reaches the agent.
+ */
+export function cleanEnv(keep: readonly string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value === undefined || matches(name, NEVER_ENV)) continue;
+    if (matches(name, BASE_ENV) || matches(name, keep)) env[name] = value;
+  }
+  const path = pathValue ?? process.env.PATH;
+  if (path) env.PATH = path;
+  const user = userName();
+  if (user) env.USER = user;
+  env.NO_COLOR = "1";
+  return env;
+}
 
 let runner: Runner = defaultRunner;
 

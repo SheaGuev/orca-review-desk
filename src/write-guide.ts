@@ -22,6 +22,7 @@ import {
   type Clone,
   type PrRefs,
 } from "./git";
+import { watchGit } from "./git-guard";
 import { myReviewComments, type PrDetails } from "./github";
 import type { PrPlace, Triage } from "./pr-data";
 import { buildPrompt, buildRepairPrompt, type SinceInput } from "./prompt";
@@ -39,6 +40,7 @@ import {
   type SkippedFile,
   type TourRules,
 } from "./schema";
+import { findSecret } from "./secrets";
 import type { Settings } from "./settings";
 
 const SINCE_DIFF_LIMIT = 60_000;
@@ -224,6 +226,15 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
   };
 }
 
+/** Whatever is stored may be opened, shared or quoted into a review: no credentials in it. */
+function refuseSecrets(guide: PrGuide): void {
+  const secret = findSecret(JSON.stringify(guide));
+  if (secret)
+    throw new Error(
+      `The agent's reply holds what looks like ${secret}, so the guide was not stored.`,
+    );
+}
+
 /** Fetches the PR, runs the agent and returns the finished guide; throws when the run fails. */
 export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
   const { clone, pr } = req;
@@ -287,7 +298,10 @@ async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
     `generating ${key} at ${pr.headRefOid.slice(0, 7)} with ${settings.harness}${settings.model ? ` (${settings.model})` : ""}; skipped by design: ${triage.skipped.map((f) => `${f.path} (${f.reason})`).join(", ") || "none"}; must be deep: ${[...rules.risky.keys()].join(", ") || "none"}`,
   );
   const started = Date.now();
-  const { guide: replied, toolCalls } = await askAgent(req, prompt, { ...base, tour: rules });
+  // A run that changed the clone's git config or hooks stores nothing (GitTampered).
+  const { guide: replied, toolCalls } = await watchGit(clone.path, () =>
+    askAgent(req, prompt, { ...base, tour: rules }),
+  );
   const covered = enforceCoverage(replied.readingOrder, changed, replied.findings, rules);
   if (covered.fixed.length) req.log(`${key}: coverage: ${covered.fixed.join("; ")}`);
   const guide = withFacts(
@@ -303,6 +317,7 @@ async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
       skipped: triage.skipped,
     },
   );
+  refuseSecrets(guide);
   logReady(req, guide, started);
   return guide;
 }

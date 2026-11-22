@@ -62,9 +62,12 @@ async function ownedFiles(
   return typeof text === "string" ? countOwnedFiles(parseCodeowners(text), files, teams) : null;
 }
 
+/** Authors whose PRs get automatic runs; anyone else's PR is only run when the person asks. */
+const TRUSTED = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
 /** Why this PR gets no automatic guide, or null when it does. */
 export function manualReason(
-  pr: { lane: Lane; details: PrDetails; owned: number | null },
+  pr: { lane: Lane; details: PrDetails; owned: number | null; association: string | null },
   repo: { optIn: boolean | null; hasClone: boolean },
   settings: Settings,
 ): string | null {
@@ -73,6 +76,9 @@ export function manualReason(
   if (repo.optIn !== true)
     return repo.optIn === false ? "Repository turned off" : "Repository not turned on yet";
   if (d.isDraft && settings.skipDrafts) return "Draft";
+  // A stranger's PR (say, through a CODEOWNERS team request) is not run unasked. Your own are.
+  if (lane !== "authored" && !TRUSTED.has(pr.association ?? ""))
+    return pr.association === null ? "Author's access unknown" : "Author is not a collaborator";
   if (lane === "user" && !settings.autoRequested) return "Automatic guides are off";
   if (lane === "team") {
     if (!settings.autoTeams) return "Automatic team guides are off";
@@ -108,6 +114,8 @@ export type PrFound = {
   clone: Clone | null;
   team: string | null;
   requestedAt: number;
+  /** GitHub's author_association; null when unknown or not asked (your own PRs). */
+  association: string | null;
 };
 
 /** The part of a queue row that comes straight from GitHub and the search that found the PR. */
@@ -158,7 +166,11 @@ export async function buildItem(
   const lockfileOnly = isLockfileOnly(files);
   const reason = lockfileOnly
     ? "Lockfile only"
-    : manualReason({ lane, details: d, owned }, { optIn, hasClone: clone !== null }, settings);
+    : manualReason(
+        { lane, details: d, owned, association: pr.association },
+        { optIn, hasClone: clone !== null },
+        settings,
+      );
   const status = statusOf({ run: deps.run, guide, meta, head: d.headRefOid, lockfileOnly });
   return {
     details: d,

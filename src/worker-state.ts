@@ -26,6 +26,8 @@ export type WorkerState = {
   agentSignedOut: boolean;
   /** QueueState.openKey: the guide last opened or moved through. */
   openKey: string | null;
+  /** The last run that changed its clone's git config or hooks; cleared when its repo is turned on. */
+  tampered: { key: string; repo: string; paths: readonly string[] } | null;
 };
 
 export const createWorkerState = (settings: Settings, runsToday: number): WorkerState => ({
@@ -40,6 +42,7 @@ export const createWorkerState = (settings: Settings, runsToday: number): Worker
   lastError: null,
   agentSignedOut: false,
   openKey: null,
+  tampered: null,
 });
 
 /** Replaces fields of a tracked PR's queue item; a PR no longer tracked is left alone. */
@@ -57,9 +60,20 @@ export function runState(state: WorkerState, key: string): RunState {
 const clock = (ms: number): string =>
   new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/** The one status line the panel shows: GitHub unreachable, agent signed out, daily limit. */
+/** "a, b", or "a, b and 3 more". */
+const someOf = (paths: readonly string[]): string =>
+  paths.length > 2
+    ? `${paths.slice(0, 2).join(", ")} and ${paths.length - 2} more`
+    : paths.join(", ");
+
+/** The one status line the panel shows: a tampering run, GitHub unreachable, agent signed out, daily limit. */
 function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null {
-  const { settings, checkedAt } = state;
+  const { settings, checkedAt, tampered } = state;
+  if (tampered)
+    return {
+      tone: "danger",
+      text: `The run for ${tampered.key} changed ${someOf(tampered.paths)} · automatic guides are off for ${tampered.repo} until you turn them back on`,
+    };
   if (state.lastError)
     return {
       tone: "warning",

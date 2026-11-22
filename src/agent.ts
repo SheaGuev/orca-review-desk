@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolCall } from "./diff";
-import { run } from "./exec";
+import { cleanEnv, run } from "./exec";
 import { asList, asObj, asString, isObj, parseJson } from "./json";
 
 export type Harness = "claude" | "codex";
@@ -15,6 +15,11 @@ export function asHarness(value: unknown): Harness {
 
 /** Only these built-in tools exist in the run, all pre-approved; no shell (the worker writes the PR's files). */
 const CLAUDE_TOOLS = "Read,Grep,Glob";
+/** The harness's own variables (auth, config) kept in its clean environment; `*` ends a prefix. */
+const AGENT_ENV: Record<Harness, readonly string[]> = {
+  claude: ["ANTHROPIC_*", "CLAUDE_*"],
+  codex: ["OPENAI_*", "CODEX_*"],
+};
 const AGENT_TIMEOUT_MS = 15 * 60_000;
 /** Claude refuses `--strict-mcp-config` when an enterprise MCP config is present. */
 const ENTERPRISE_MCP_REFUSAL =
@@ -128,10 +133,11 @@ export async function runAgent(
 ): Promise<AgentReply> {
   const dir = await mkdtemp(join(tmpdir(), "pr-tour-"));
   const outFile = join(dir, "last-message.txt");
+  const env = cleanEnv(AGENT_ENV[harness]);
   try {
     const attempt = (strictMcp: boolean) => {
       const { cmd, args } = agentCommand(harness, model, outFile, strictMcp);
-      return run(cmd, args, { cwd, input: prompt, timeoutMs: AGENT_TIMEOUT_MS, signal });
+      return run(cmd, args, { cwd, input: prompt, timeoutMs: AGENT_TIMEOUT_MS, signal, env });
     };
     let result = await attempt(true);
     // Retry once without strict MCP only for Claude's enterprise-policy refusal.

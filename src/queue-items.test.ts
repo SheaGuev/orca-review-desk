@@ -20,31 +20,57 @@ const settings = readSettings({});
 
 test("why a PR gets no automatic guide", () => {
   const repo = { optIn: true, hasClone: true };
-  assert.equal(manualReason({ lane: "user", details, owned: null }, repo, settings), null);
   assert.equal(
-    manualReason({ lane: "user", details, owned: null }, { ...repo, hasClone: false }, settings),
+    manualReason({ lane: "user", details, owned: null, association: "MEMBER" }, repo, settings),
+    null,
+  );
+  assert.equal(
+    manualReason(
+      { lane: "user", details, owned: null, association: "MEMBER" },
+      { ...repo, hasClone: false },
+      settings,
+    ),
     "No local clone in Orca",
   );
   assert.equal(
-    manualReason({ lane: "user", details, owned: null }, { ...repo, optIn: null }, settings),
+    manualReason(
+      { lane: "user", details, owned: null, association: "MEMBER" },
+      { ...repo, optIn: null },
+      settings,
+    ),
     "Repository not turned on yet",
   );
   assert.equal(
-    manualReason({ lane: "team", details, owned: 3 }, repo, settings),
+    manualReason({ lane: "team", details, owned: 3, association: "MEMBER" }, repo, settings),
     "Under 200 lines",
   );
   assert.equal(
-    manualReason({ lane: "team", details, owned: 0 }, repo, { ...settings, teamMinLines: 0 }),
+    manualReason({ lane: "team", details, owned: 0, association: "MEMBER" }, repo, {
+      ...settings,
+      teamMinLines: 0,
+    }),
     "No files your teams own",
   );
   assert.equal(
     manualReason(
-      { lane: "user", details: { ...details, isDraft: true }, owned: null },
+      { lane: "user", details: { ...details, isDraft: true }, owned: null, association: "MEMBER" },
       repo,
       settings,
     ),
     "Draft",
   );
+});
+
+test("only PRs by the repository's owners, members and collaborators get automatic guides", () => {
+  const repo = { optIn: true, hasClone: true };
+  const reason = (lane: "user" | "authored", association: string | null) =>
+    manualReason({ lane, details, owned: null, association }, repo, settings);
+  for (const trusted of ["OWNER", "MEMBER", "COLLABORATOR"])
+    assert.equal(reason("user", trusted), null, trusted);
+  for (const outside of ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"])
+    assert.equal(reason("user", outside), "Author is not a collaborator", outside);
+  assert.equal(reason("user", null), "Author's access unknown", "fails safe");
+  assert.equal(reason("authored", null), null, "your own PRs count as trusted");
 });
 
 test("a run under way decides a PR's status before its guide does", () => {

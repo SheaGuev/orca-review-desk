@@ -9,6 +9,7 @@ import {
   type DraftComment,
   type ReviewEvent,
 } from "./review";
+import { findSecret } from "./secrets";
 
 export type Posted = {
   /** The review's page on GitHub, when GitHub named one. */
@@ -23,10 +24,26 @@ const post = (path: string, payload: unknown): Promise<string> =>
     timeoutMs: 60_000,
   });
 
+/** Throws, naming where, when the summary or a comment holds what looks like a secret. */
+function refuseSecrets(body: string, draft: Draft): void {
+  const parts = [
+    { where: "The summary", text: body },
+    ...draft.comments.map((c) => ({ where: `The comment on ${c.path}`, text: c.body })),
+  ];
+  for (const { where, text } of parts) {
+    const kind = findSecret(text);
+    if (kind)
+      throw new Error(
+        `${where} holds what looks like ${kind}, so nothing was posted. Remove it, then post again.`,
+      );
+  }
+}
+
 /**
  * Posts the draft as one GitHub review (line comments inside it), then each whole-file comment,
  * which GitHub only takes on its own, one after the other so they keep the draft's order. Throws
- * when the review itself is refused; a refused file comment is returned instead.
+ * when any part holds what looks like a secret (nothing is posted) or the review itself is
+ * refused; a refused file comment is returned instead.
  */
 export async function postReview(input: {
   repo: string;
@@ -38,6 +55,7 @@ export async function postReview(input: {
   log: (text: string) => void;
 }): Promise<Posted> {
   const { repo, number, draft, event, body, head } = input;
+  refuseSecrets(body, draft);
   const out = await post(
     `repos/${repo}/pulls/${number}/reviews`,
     reviewPayload(draft, event, body, head),

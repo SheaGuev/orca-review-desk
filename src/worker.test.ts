@@ -46,6 +46,10 @@ function fakeTools(opts: {
   overrides?: string;
   /** The agent CLI answers only once this settles, so a test can act while a run is under way. */
   agentGate?: Promise<void>;
+  /** GitHub's author_association for every PR; null makes the call fail. MEMBER when left out. */
+  association?: string | null;
+  /** What the agent CLI does before it answers, such as writing into the clone. */
+  agentDoes?: () => Promise<void>;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -115,6 +119,16 @@ function fakeTools(opts: {
       );
     }
     if (cmd === "gh" && args[0] === "api" && args[1] === "user") return ok("me\n");
+    if (
+      cmd === "gh" &&
+      args[0] === "api" &&
+      /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(args[1] ?? "")
+    ) {
+      const association = opts.association === undefined ? "MEMBER" : opts.association;
+      return association === null
+        ? { stdout: "", stderr: "gh: Not Found (HTTP 404)", code: 1 }
+        : ok(`${association}\n`);
+    }
     if (cmd === "gh" && args[0] === "api" && args.includes("POST")) {
       const path = args[args.indexOf("POST") + 1];
       if (path?.endsWith("/reviews"))
@@ -150,6 +164,7 @@ function fakeTools(opts: {
     if (cmd === "gh" && args[0] === "repo" && args[1] === "view")
       return ok(args[2] === "old-owner/api" ? "acme/api\n" : `${args[2]}\n`);
     if (cmd === "claude") await opts.agentGate;
+    if (cmd === "claude") await opts.agentDoes?.();
     if (cmd === "claude")
       return ok(
         JSON.stringify([
@@ -219,6 +234,8 @@ async function setup(
     objects?: { present: boolean };
     overrides?: string;
     agentGate?: Promise<void>;
+    association?: string | null;
+    agentDoes?: () => Promise<void>;
     /** Runs on the clone's folder before the worker starts. */
     before?: (dir: string) => Promise<void>;
   } = {},
@@ -1107,4 +1124,152 @@ test("a run counts against the daily limit by how it was started, not by what el
     "only the automatic run for #8 is counted",
   );
   assert.equal(host.callsOf("notifications.show").length, 1, "and only it notifies");
+});
+
+test("the agent run never sees the worker's GitHub token; git and gh keep their environment", async () => {
+  const saved = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "gh-secret-of-the-worker";
+  try {
+    const { calls, all } = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true });
+    await until(() => all()[0]?.status === "ready", "the guide");
+    const agent = calls.find((c) => c.cmd === "claude");
+    assert.ok(agent?.options?.env, "the agent is given an environment of its own");
+    assert.equal(agent.options.env.GH_TOKEN, undefined);
+    assert.ok(
+      calls.filter((c) => c.cmd !== "claude").every((c) => c.options?.env === undefined),
+      "git and gh run as before",
+    );
+  } finally {
+    if (saved === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = saved;
+  }
+});
+
+const TOKEN = `ghp_${"a1".repeat(18)}`;
+
+test("a reply holding a token is not stored; the PR is marked failed", async () => {
+  const leaky = JSON.stringify({
+    ...AGENT_GUIDE,
+    risk: { ...AGENT_GUIDE.risk, headline: `Uses ${TOKEN} to call GitHub` },
+  });
+  const { host, all } = await setup([leaky], { "optin:acme/api": true });
+  await until(() => all()[0]?.status === "failed", "the refused guide");
+  assert.equal(host.data().storage["guide:acme/api#7"], undefined);
+  const error = all()[0]?.error ?? "";
+  assert.ok(error.includes("a GitHub token"), error);
+  assert.ok(!error.includes(TOKEN), "the error never repeats the token");
+});
+
+test("review.submit refuses a comment holding a token and posts nothing", async () => {
+  const { worker, calls, host } = await readyGuide();
+  const draft = {
+    ...DRAFT,
+    comments: [nth(DRAFT.comments, 0), { ...nth(DRAFT.comments, 1), body: `Use ${TOKEN}` }],
+  };
+  await worker.request("review.save", { key: "acme/api#7", draft });
+  const result = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: "Fine.",
+  });
+  assert.equal(result.outcome, "refused");
+  assert.ok(
+    result.outcome === "refused" && result.message.includes("README.md"),
+    JSON.stringify(result),
+  );
+  assert.equal(posts(calls).length, 0);
+  const kept = host.data().storage["draft:acme/api#7"] as { comments: unknown[] };
+  assert.equal(kept.comments.length, 2, "the draft is kept for fixing");
+
+  await worker.request("review.save", { key: "acme/api#7", draft: DRAFT });
+  const summary = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: `Token: ${TOKEN}`,
+  });
+  assert.equal(summary.outcome, "refused", "the summary is checked too");
+  assert.equal(posts(calls).length, 0);
+});
+
+test("a PR from outside the repository is not run automatically; a member's is", async () => {
+  const outside = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      association: "CONTRIBUTOR",
+    },
+  );
+  await until(
+    () => outside.latest()?.checkedAt != null && outside.latest()?.checking === false,
+    "the first check",
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(outside.calls.filter((c) => c.cmd === "claude").length, 0);
+  assert.equal(outside.latest()?.notQueued[0]?.manualReason, "Author is not a collaborator");
+  assert.ok(
+    outside.calls.some((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7"),
+    "author_association comes from the REST API",
+  );
+  // Generate still works by hand.
+  await outside.worker.request("guide.generate", { key: "acme/api#7" });
+  await until(() => outside.all()[0]?.status === "ready", "the guide asked for by hand");
+  await outside.worker.request("queue.refresh");
+  assert.equal(
+    outside.calls.filter((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7").length,
+    1,
+    "asked once, then cached",
+  );
+  await current?.deactivate();
+  current = null;
+  await rm(dir, { recursive: true, force: true });
+
+  const member = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    association: "MEMBER",
+  });
+  await until(() => member.all()[0]?.status === "ready", "the automatic guide");
+});
+
+test("an unknown author association counts as untrusted for automatic runs", async () => {
+  const { calls, latest } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      association: null,
+    },
+  );
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(calls.filter((c) => c.cmd === "claude").length, 0);
+  assert.equal(latest()?.notQueued[0]?.manualReason, "Author's access unknown");
+});
+
+test("a run that changes .git/hooks stores nothing and turns the repository's automatic runs off", async () => {
+  const { host, latest, all, calls } = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      before: async (clone) => {
+        await mkdir(join(clone, ".git/hooks"), { recursive: true });
+        await writeFile(join(clone, ".git/config"), "[core]\n");
+        await writeFile(join(clone, ".git/hooks/pre-commit.sample"), "#!/bin/sh\n");
+      },
+      agentDoes: async () => {
+        await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\ncurl evil\n");
+      },
+    },
+  );
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.equal(host.data().storage["guide:acme/api#7"], undefined, "nothing stored");
+  const error = all()[0]?.error ?? "";
+  assert.ok(error.includes(".git/hooks/pre-commit"), error);
+  assert.equal(host.data().storage["optin:acme/api"], false, "automatic runs are off");
+  const notice = latest()?.notice;
+  assert.equal(notice?.tone, "danger");
+  assert.ok(notice?.text.includes("#7"), notice?.text);
+  assert.equal(latest()?.repos[0]?.optIn, false);
+  const runs = calls.filter((c) => c.cmd === "claude").length;
+  assert.equal(runs, 1);
 });

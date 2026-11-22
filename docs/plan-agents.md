@@ -1,6 +1,6 @@
 # PR Tour: more agents, technical plan
 
-Status: agreed scope, Phases 0 and 1 done, nothing else started. Written 2026-11-22.
+Status: agreed scope, Phases 0, 1 and 2 done, nothing else started. Written 2026-11-22.
 
 Today PR Tour runs two agent CLIs, Claude Code and Codex (`src/agent.ts`). Users of other agents
 read that as "Claude Code only". This plan adds a first wave of eight agents and a repeatable way
@@ -35,7 +35,7 @@ a "custom command" harness, giving agents git history (`git log`, blame).
 | --- | --- | --- | --- |
 | 0 | Agent runs | `src/agent.ts`, `orca-plugin.json` | Done: model default `""`; Claude retries once without `--strict-mcp-config` under an enterprise MCP config |
 | 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands; Claude loses `Bash` |
-| 2 | Safety | `src/exec.ts`, `src/github.ts`, `src/queue.ts`, new `src/secrets.ts`, `src/write-guide.ts`, `src/post-review.ts` | Clean agent env, secret scan of replies, auto-run only for trusted authors, `.git` tamper check |
+| 2 | Safety | `src/exec.ts`, `src/agent.ts`, `src/github.ts`, `src/queue-items.ts`, `src/queue-check.ts`, new `src/secrets.ts`, new `src/git-guard.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/post-review.ts` | Done: clean agent env, secret scan of replies and reviews, auto-run only for trusted authors, `.git` tamper check |
 | 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `orca-plugin.json` | `Harness` union becomes a spec table; still claude and codex only |
 | 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `README.md` | Conformance script; add cursor, copilot, gemini, droid, qwen, pi |
 
@@ -126,6 +126,35 @@ list to the prompt from the worker.
 4. **Tamper check** (`src/write-guide.ts`): hash `.git/config` and `.git/hooks/` before and after
    the run. On a difference: store nothing, show a danger notice naming the PR, and turn off
    automatic runs for that repo until the person turns them back on.
+
+**As built** (differences from the above):
+
+- Env: `RunOptions.env` replaces the environment; `cleanEnv(keep)` in `src/exec.ts` builds it and
+  `runAgent` passes `cleanEnv(AGENT_ENV[harness])` (claude: `ANTHROPIC_*`, `CLAUDE_*`; codex:
+  `OPENAI_*`, `CODEX_*`; the table Phase 3 takes over). Besides PATH (the login-shell one), HOME,
+  USER, LOGNAME, SHELL, TMPDIR, LANG/LANGUAGE/LC_*, TERM, TZ and `NO_COLOR=1`, the base list also
+  keeps `XDG_*_HOME`/`XDG_RUNTIME_DIR` (Linux config locations), proxy and CA variables
+  (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE/DIR`, so agents
+  still reach their API behind a corporate proxy) and Windows' own (`SYSTEMROOT`, `APPDATA`,
+  `USERPROFILE`, `TEMP`, ...). Names compare without case. `GH_TOKEN`, `GITHUB_TOKEN`,
+  `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `NPM_TOKEN` and `AWS_*` are dropped even if a
+  harness pattern matched them, so Claude on Bedrock (AWS credentials from the environment) does
+  not work; git and gh keep the worker's environment.
+- Secrets: the whole finished guide (`JSON.stringify`) is scanned, not only the raw reply; the error
+  names the kind ("a GitHub token"), never the value. `postReview` checks the summary and every
+  comment before the first request and throws, so the guide tab shows "refused" with which part
+  holds it; the draft is kept.
+- Trust: `authorAssociation` in `src/github.ts`; asked once per PR per worker session in
+  `src/queue-check.ts` (a failed read is asked again next check), not stored. The rule is in
+  `manualReason` (`src/queue-items.ts`), after the clone/opt-in/draft checks: "Author is not a
+  collaborator", or "Author's access unknown" when it could not be read. Your own PRs (the authored
+  lane) are not asked and count as trusted.
+- Tamper: `watchGit` (new `src/git-guard.ts`) wraps both agent rounds; it hashes the common git
+  dir's `config` and everything under `hooks/` (links by target) and throws `GitTampered` naming
+  the added, removed or changed paths, even when the run itself failed. `src/guide-run.ts` then
+  stores `optin:<repo> = false`, drops queued automatic runs of that repo, and sets
+  `WorkerState.tampered`, which shows as the danger notice until the repo is turned back on
+  (`repo.setOptIn`). Row reasons: "changed the clone's git files", "reply held a secret".
 
 ## 3. Agent spec table (`src/agent.ts`)
 

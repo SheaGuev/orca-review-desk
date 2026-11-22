@@ -91,6 +91,7 @@ async function focusedKey(p: Parts): Promise<string> {
     clone: await p.clones.find(f.repo),
     team: null,
     requestedAt: Date.parse(details.createdAt) || Date.now(),
+    association: null,
   });
   p.state.tracked.set(key, { ...built, auto: false });
   return key;

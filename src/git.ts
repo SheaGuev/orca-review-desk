@@ -108,13 +108,18 @@ export async function logBetween(cwd: string, from: string, to: string): Promise
   return out.trim();
 }
 
-/** Adds `.pr-tour/` to the repository's own exclude list, so guides never show in `git status`. */
-export async function hideGuideFolder(workspacePath: string): Promise<void> {
+/** The repository's shared `.git` folder (config, hooks), also from a linked worktree. */
+export async function gitCommonDir(workspacePath: string): Promise<string> {
   const out = await runOk("git", ["-C", workspacePath, "rev-parse", "--git-common-dir"], {
     timeoutMs: 10_000,
   });
   const common = out.trim();
-  const infoDir = join(isAbsolute(common) ? common : join(workspacePath, common), "info");
+  return isAbsolute(common) ? common : join(workspacePath, common);
+}
+
+/** Adds `.pr-tour/` to the repository's own exclude list, so guides never show in `git status`. */
+export async function hideGuideFolder(workspacePath: string): Promise<void> {
+  const infoDir = join(await gitCommonDir(workspacePath), "info");
   const exclude = join(infoDir, "exclude");
   const current = await readFile(exclude, "utf8").catch(() => "");
   if (current.split("\n").some((l) => l.trim() === ".pr-tour/")) return;
