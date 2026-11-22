@@ -427,7 +427,7 @@ own table.
 refresh 22 and a quick restart 42 again, up to 6 at once. Now:
 
 - **Quick restart**: a worker restarted less than 2 minutes (`RECENT_CHECK_MS`) after the saved
-  check lists the saved PRs and asks GitHub nothing; the 5-minute poll checks later. Refresh and
+  check lists the saved PRs and asks GitHub nothing; the 2-minute poll checks later. Refresh and
   settings changes still check at once.
 - **Unchanged PRs**: each PR's `gh pr view` details are kept in memory with the search hit's
   `updated_at` and read again only when it moves; PRs no longer found are dropped. Review-request

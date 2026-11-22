@@ -751,6 +751,23 @@ const prViews = (calls: { cmd: string; args: string[] }[]) =>
 const associationCalls = (calls: { cmd: string; args: string[] }[]) =>
   calls.filter((c) => c.cmd === "gh" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(c.args[1] ?? ""));
 
+test("the worker checks GitHub every 2 minutes", async () => {
+  const intervals: number[] = [];
+  const real = globalThis.setInterval;
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
+    intervals.push(ms ?? 0);
+    return real(fn, ms);
+  }) as typeof setInterval;
+  try {
+    const { latest } = await setup([JSON.stringify(AGENT_GUIDE)]);
+    await until(() => latest()?.checkedAt != null, "the first check");
+  } finally {
+    globalThis.setInterval = real;
+  }
+  assert.ok(intervals.includes(2 * 60_000), `intervals: ${intervals.join(", ")}`);
+  assert.ok(!intervals.includes(5 * 60_000), "no longer every 5 minutes");
+});
+
 test("a restart within 2 minutes of the last check asks GitHub nothing; later it checks", async () => {
   const first = await setup([JSON.stringify(AGENT_GUIDE)]);
   await until(

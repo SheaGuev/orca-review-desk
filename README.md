@@ -41,7 +41,7 @@ Guides are read from a local clone, so add each repository you review to Orca as
 
 <img src="assets/panel-queue.png" width="400" alt="The Reviews panel listing a PR with a medium risk badge and its tour progress">
 
-The panel checks GitHub every 5 minutes, or when you press refresh. It lists:
+The panel checks GitHub every 2 minutes, or when you press refresh. It lists:
 
 - PRs that request **your** review
 - PRs for the **teams** you list in Settings, tagged with the team

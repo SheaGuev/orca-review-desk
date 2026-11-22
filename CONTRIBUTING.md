@@ -22,7 +22,7 @@ orca plugin dev request . queue.refresh --json
 
 ## How a guide gets made
 
-1. **Find PRs.** Every 5 minutes the worker asks GitHub through `gh` for PRs requesting your
+1. **Find PRs.** Every 2 minutes the worker asks GitHub through `gh` for PRs requesting your
    review (`user-review-requested:@me`), your teams' PRs, and optionally your own.
 2. **Decide.** In a repository you turned on, direct requests get a guide, and team requests do
    when they pass the filter. Drafts and lockfile-only PRs are skipped. Automatic runs stop at the

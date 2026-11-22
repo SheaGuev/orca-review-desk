@@ -35,7 +35,8 @@ import {
   type WorkerState,
 } from "./worker-state";
 
-const POLL_MS = 5 * 60_000;
+/** How often GitHub is checked; cheap, since an unchanged PR costs no call beyond its search. */
+const POLL_MS = 2 * 60_000;
 /** A restart this soon after the last check lists the saved PRs and leaves checking to the poll. */
 const RECENT_CHECK_MS = 2 * 60_000;
 /** Waits after checks hit the rate limit in a row, when GitHub gives no reset time. */
