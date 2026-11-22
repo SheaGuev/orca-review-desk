@@ -16,14 +16,14 @@ import { createGuideRun } from "./guide-run";
 import { createOpener, type Opener } from "./open-guide";
 import { createPrData } from "./pr-data";
 import { createQueueCheck } from "./queue-check";
-import { buildItem, type PrFound, type Tracked } from "./queue-items";
+import { buildItem, restoreItem, type PrFound, type Tracked } from "./queue-items";
 import { prKey } from "./repo";
 import { registerRequests } from "./requests";
 import { removeStaleRuns } from "./run-files";
 import { createReviewService, type ReviewService } from "./review-service";
 import { createRunQueue, type RunQueue } from "./run-queue";
 import { readSettings } from "./settings";
-import { createStore, type Store, type StoredGuide } from "./store";
+import { createStore, type SavedPr, type Store, type StoredGuide } from "./store";
 import { createTourProgress } from "./tour-progress";
 import {
   createWorkerState,
@@ -55,6 +55,8 @@ type Parts = {
   publish: () => void;
   /** The PR as the queue shows it now, read from storage and the local clone. */
   itemFor: (pr: PrFound) => Promise<Tracked>;
+  /** A PR the last check saved, as the queue shows it now. */
+  restoreItem: (saved: SavedPr) => Promise<Tracked>;
 };
 
 async function requireGuide(store: Store, key: string): Promise<StoredGuide> {
@@ -175,6 +177,12 @@ async function createParts(orca: OrcaWorkerApi) {
   });
   const tours = createTourProgress({ skipped: prData.skipped, log });
   const focus = createFocus({ host: orca.host, state, log });
+  const itemDeps = (key: string) => ({
+    store,
+    settings: state.settings,
+    run: runState(state, key),
+    tourLabel: tours.label,
+  });
   const parts: Parts = {
     state,
     store,
@@ -186,13 +194,8 @@ async function createParts(orca: OrcaWorkerApi) {
       orca.panels.post("queue.changed", queueStateOf(state));
       void focus.showStatusBar();
     },
-    itemFor: (pr) =>
-      buildItem(pr, {
-        store,
-        settings: state.settings,
-        run: runState(state, pr.key),
-        tourLabel: tours.label,
-      }),
+    itemFor: (pr) => buildItem(pr, itemDeps(pr.key)),
+    restoreItem: (saved) => restoreItem(saved, itemDeps(saved.key)),
   };
   return { parts, prData, tours, settingsNow };
 }
@@ -208,13 +211,28 @@ async function clearOldRuns(orca: OrcaWorkerApi, log: (text: string) => void): P
   }
 }
 
+/**
+ * Before the first check: the login shell's PATH, no run folders left by a crash, and the list
+ * from before a restart shown until the check replaces it.
+ */
+async function beforeFirstCheck(
+  orca: OrcaWorkerApi,
+  p: Parts,
+  restore: () => Promise<void>,
+): Promise<void> {
+  await loadLoginPath();
+  await clearOldRuns(orca, p.log);
+  await restore().catch((e: unknown) => p.log(`could not restore the list: ${message(e)}`));
+  p.publish();
+}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
   const { parts, prData, tours, settingsNow } = await createParts(orca);
-  const { state, store, clones, focus, opener, log, publish, itemFor } = parts;
+  const { state, store, clones, focus, opener, log, publish } = parts;
   /** Guides started from a command open themselves when they are written. */
   const openWhenReady = new Set<string>();
-  const check = createQueueCheck({ state, store, clones, readSettings: settingsNow, itemFor, log });
-  const refresh = createRefresh(parts, check, () => runs.scheduleAutomatic());
+  const queue = createQueueCheck({ ...parts, readSettings: settingsNow });
+  const refresh = createRefresh(parts, queue.check, () => runs.scheduleAutomatic());
   const generate = createGuideRun({
     state,
     store,
@@ -251,8 +269,7 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     },
   });
 
-  await loadLoginPath();
-  await clearOldRuns(orca, log);
+  await beforeFirstCheck(orca, parts, queue.restore);
   const poll = setInterval(() => void refresh(), POLL_MS);
   stopTimers = () => {
     clearInterval(poll);

@@ -1,12 +1,14 @@
 // One check of GitHub: which PRs wait for the person, each one's details and when its review
-// was asked for, then the queue rebuilt from them.
+// was asked for, then the queue rebuilt from them and saved, so a restarted worker lists them
+// before its first check.
 import { mapLimit } from "./cache";
 import type { Clones } from "./clones";
 import { message } from "./errors";
 import { authorAssociation, prDetails, requestTimes, type PrDetails } from "./github";
-import { searchLanes, type Found, type PrFound, type Tracked } from "./queue-items";
+import type { RepoState } from "./protocol";
+import { savedPr, searchLanes, type Found, type PrFound, type Tracked } from "./queue-items";
 import type { Settings } from "./settings";
-import type { Store } from "./store";
+import type { SavedPr, Store } from "./store";
 import type { WorkerState } from "./worker-state";
 
 const MAX_PRS = 40;
@@ -22,6 +24,8 @@ type Deps = {
   readSettings: () => Promise<Settings>;
   /** The PR as the queue shows it, read from storage and the local clone. */
   itemFor: (pr: PrFound) => Promise<Tracked>;
+  /** A PR the last check saved, read again from storage. */
+  restoreItem: (saved: SavedPr) => Promise<Tracked>;
   log: (text: string) => void;
 };
 
@@ -76,19 +80,17 @@ async function askRequestTimes(
 }
 
 /** The repositories of the PRs found, each with whether guides are made in it automatically. */
-async function readRepos(deps: Deps, built: readonly Tracked[]): Promise<void> {
-  const { state, store } = deps;
+async function reposOf(store: Store, built: readonly Tracked[]): Promise<RepoState[]> {
   const names = [...new Set(built.map((t) => t.item.repo))];
   const optIns = await Promise.all(names.map((repo) => store.optIn(repo)));
-  state.repos.clear();
-  names.forEach((repo, i) => {
+  return names.map((repo, i) => {
     const mine = built.filter((t) => t.item.repo === repo);
-    state.repos.set(repo, {
+    return {
       repo,
       optIn: optIns[i] ?? null,
-      hasClone: mine.some((t) => t.clone !== null),
+      hasClone: mine.some((t) => t.item.hasClone),
       pending: mine.length,
-    });
+    };
   });
 }
 
@@ -122,14 +124,39 @@ async function check(deps: Deps, asked: Asked): Promise<void> {
       association,
     }),
   );
+  const repos = await reposOf(store, built);
   state.tracked.clear();
   for (const t of built) state.tracked.set(t.item.key, t);
-  await readRepos(deps, built);
+  state.repos.clear();
+  for (const r of repos) state.repos.set(r.repo, r);
   state.checkedAt = Date.now();
   state.lastError = null;
+  await store
+    .setLastCheck({ checkedAt: state.checkedAt, prs: built.map(savedPr) })
+    .catch((e: unknown) => deps.log(`could not save the list: ${message(e)}`));
 }
 
-export function createQueueCheck(deps: Deps): () => Promise<void> {
+/**
+ * Lists the PRs the last check saved, with when it ran, until a check works. Nothing is run for
+ * them: automatic runs follow a check that worked.
+ */
+async function restore(deps: Deps): Promise<void> {
+  const { state, store } = deps;
+  const saved = await store.lastCheck();
+  if (!saved) return;
+  const built = await mapLimit(saved.prs, 1, deps.restoreItem);
+  const repos = await reposOf(store, built);
+  // A check that worked meanwhile knows better.
+  if (state.checkedAt !== null) return;
+  for (const t of built) if (!state.tracked.has(t.item.key)) state.tracked.set(t.item.key, t);
+  for (const r of repos) if (!state.repos.has(r.repo)) state.repos.set(r.repo, r);
+  state.checkedAt = saved.checkedAt;
+}
+
+export function createQueueCheck(deps: Deps): {
+  check: () => Promise<void>;
+  restore: () => Promise<void>;
+} {
   const asked: Asked = { requested: new Map(), associations: new Map() };
-  return () => check(deps, asked);
+  return { check: () => check(deps, asked), restore: () => restore(deps) };
 }

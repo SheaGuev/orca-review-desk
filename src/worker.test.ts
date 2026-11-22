@@ -52,12 +52,20 @@ function fakeTools(opts: {
   agentDoes?: () => Promise<void>;
   /** Which binaries are on PATH; all of them when left out. */
   installed?: (cmd: string) => boolean;
+  /** Every gh call fails with GitHub's rate limit. */
+  ghDown?: boolean;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
   setRunner(async (cmd, args, options) => {
     calls.push({ cmd, args, options });
     const ok = (stdout: string) => ({ stdout, stderr: "", code: 0 });
+    if (cmd === "gh" && opts.ghDown)
+      return {
+        stdout: "",
+        stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        code: 1,
+      };
     if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:old-owner/api.git\n");
     if (cmd === "git" && args.includes("--git-common-dir")) return ok(".git\n");
     if (cmd === "git" && args.includes("fetch") && opts.objects) opts.objects.present = true;
@@ -241,6 +249,7 @@ async function setup(
     installed?: (cmd: string) => boolean;
     /** Runs on the clone's folder before the worker starts. */
     before?: (dir: string) => Promise<void>;
+    ghDown?: boolean;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -652,6 +661,51 @@ test("GitHub's rate limit is named as such, not as GitHub being unreachable", as
   const notice = latest()?.notice;
   assert.equal(notice?.tone, "warning");
   assert.ok(notice?.text.startsWith("GitHub rate limit reached · last checked "), notice?.text);
+});
+
+test("after a restart, a failed first check still shows the last list, with when it was checked", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "the first check",
+  );
+  assert.equal(first.all()[0]?.key, "acme/api#7");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  // A new worker (Orca restarted, or the plugin reloaded) whose first check hits the rate limit.
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, { ghDown: true });
+  await until(() => second.latest()?.notice != null, "the failed check's notice");
+  const state = second.latest() as QueueState;
+  assert.deepEqual(
+    second.all().map((i) => i.key),
+    ["acme/api#7"],
+    "the PRs from before the restart are still listed",
+  );
+  assert.notEqual(state.checkedAt, null, "the saved list says when it was checked");
+  assert.ok(
+    state.notice?.text.startsWith("GitHub rate limit reached · last checked "),
+    state.notice?.text,
+  );
+});
+
+test("restored PRs start no automatic run until a check works; run state is not restored", async () => {
+  // The first worker's run never finishes, so its saved list has a PR due an automatic guide.
+  const first = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    agentGate: new Promise(() => undefined),
+  });
+  await until(() => first.all()[0]?.status === "generating", "the automatic run");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, { ghDown: true });
+  await until(() => second.latest()?.notice != null, "the failed check's notice");
+  await new Promise((r) => setTimeout(r, 100));
+  const row = second.all()[0];
+  assert.equal(row?.key, "acme/api#7");
+  assert.equal(row?.manualReason, null, "still due an automatic guide");
+  assert.equal(row?.status, "none", "the old worker's run is not shown as under way");
+  assert.equal(second.calls.filter((c) => c.cmd === "claude").length, 0, "no run before a check");
 });
 
 test("an agent with no sign-in shows as the notice", async () => {
