@@ -116,7 +116,7 @@ const stopName = (ctx: TourContext, i: number) =>
 // ---------------------------------------------------------------- shared
 
 /**
- * A changed file in a list (a skim stop's other files, the skipped files, Since your last review):
+ * A changed file in a list (a skim stop's other files, the skipped files):
  * its path as an open/close toggle with `lead` under it; the diff loads the first time it is
  * opened. With `line` it starts open there.
  */
@@ -177,26 +177,27 @@ function sinceToggle(ctx: TourContext, s: SinceReview, list: HTMLElement): HTMLE
     { type: "button", class: "link small", "aria-expanded": "false", "aria-controls": list.id },
     "Show changes",
   );
-  let views: (() => void)[] = [];
-  const close = () => {
-    for (const dispose of views) dispose();
-    views = [];
-    list.replaceChildren();
-  };
-  ctx.track(close);
-  const rowCtx: TourContext = { ...ctx, track: (dispose) => views.push(dispose) };
   toggle.addEventListener("click", () => {
     const open = toggle.getAttribute("aria-expanded") !== "true";
+    // No diffs here: the tour shows each file's; a row says what changed and leads to its stop.
     if (open)
       list.replaceChildren(
         ...s.changes.map((c) =>
-          fileRow(rowCtx, c.file, [
-            h("p", {}, prose(c.headline)),
-            c.answersComment ? h("span", { class: "tag new" }, "answers your comment") : null,
-          ]),
+          h(
+            "li",
+            { class: "since-row" },
+            h("span", { class: "mono small" }, c.file),
+            h(
+              "span",
+              { class: "since-note" },
+              prose(c.headline),
+              c.answersComment ? h("span", { class: "tag new" }, "answers your comment") : null,
+            ),
+            goToStop(ctx, stopForFile(ctx.lookup, c.file)),
+          ),
         ),
       );
-    else close();
+    else list.replaceChildren();
     list.hidden = !open;
     toggle.setAttribute("aria-expanded", String(open));
     toggle.textContent = open ? "Hide changes" : "Show changes";
@@ -212,7 +213,7 @@ function since(ctx: TourContext): HTMLElement | null {
   const s = ctx.guide.sinceLastReview;
   if (!s) return null;
   const list = s.changes.length
-    ? h("ul", { class: "file-rows", id: "since-files", hidden: "" })
+    ? h("ul", { class: "since-rows", id: "since-files", hidden: "" })
     : null;
   return h(
     "div",

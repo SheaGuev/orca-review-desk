@@ -56,6 +56,7 @@ const tick = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 test("Since your last review is one line, with the changed files behind Show changes", async () => {
   GlobalRegistrator.register({ url: "http://localhost/" });
   let replace: (text: string) => void = () => undefined;
+  const asked: string[] = [];
   const answers: Record<string, (input: never) => unknown> = {
     "review.get": () => ({ draft: emptyDraft(commit), canApprove: true, head: commit }),
     "review.save": () => ({ saved: true }),
@@ -71,6 +72,7 @@ test("Since your last review is one line, with the changed files behind Show cha
     orca: {
       plugin: {
         request: async (name: string, input: never) => {
+          asked.push(name);
           const answer = answers[name];
           if (!answer) throw new Error(`no answer for ${name}`);
           return structuredClone(await answer(input));
@@ -120,15 +122,29 @@ test("Since your last review is one line, with the changed files behind Show cha
     assert.equal(line()?.querySelectorAll(".file-rows li").length, 0, "no file rows until asked");
     assert.equal(toggle()?.textContent?.trim(), "Show changes");
     assert.equal(toggle()?.getAttribute("aria-expanded"), "false");
+    const diffsBefore = asked.filter((n) => n === "diff.get").length;
     toggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await tick();
-    assert.equal(line()?.querySelectorAll(".file-rows li").length, 2, "one row per changed file");
+    assert.equal(line()?.querySelectorAll("li").length, 2, "one row per changed file");
     assert.ok(line()?.textContent?.includes("answers your comment"));
+    assert.ok(line()?.textContent?.includes("Keeps the session row until the event is written"));
     assert.equal(toggle()?.textContent?.trim(), "Hide changes");
     assert.equal(toggle()?.getAttribute("aria-expanded"), "true");
+    // No diffs here: the tour shows them. Each row leads to the stop that covers its file.
+    assert.equal(
+      asked.filter((n) => n === "diff.get").length,
+      diffsBefore,
+      "opening the list loads no diff",
+    );
+    assert.equal(line()?.querySelectorAll(".diff, .dl").length, 0, "no diff lines in the list");
+    const links = () =>
+      Array.from(line()?.querySelectorAll("li button") ?? []).map((b) =>
+        (b.textContent ?? "").trim(),
+      );
+    assert.deepEqual(links(), ["Stop 1 →", "Stop 3 →"]);
     toggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await tick();
-    assert.equal(line()?.querySelectorAll(".file-rows li").length, 0, "closed again");
+    assert.equal(line()?.querySelectorAll("li").length, 0, "closed again");
 
     // The tour marks the stops that cover a changed file, in words.
     const steps = Array.from(document.querySelectorAll<HTMLElement>(".tour-step"));
@@ -144,6 +160,19 @@ test("Since your last review is one line, with the changed files behind Show cha
     const changed = line()?.textContent ?? "";
     assert.ok(/risk is now high/i.test(changed), changed);
     assert.ok(!changed.includes("still open"), changed);
+
+    // A row's link opens its stop in the tour.
+    toggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await tick();
+    Array.from(line()?.querySelectorAll("li button") ?? [])
+      .find((b) => (b.textContent ?? "").trim() === "Stop 3 →")
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await tick(100);
+    assert.equal(
+      document.querySelector(".view-heading")?.textContent,
+      AGENT_GUIDE.readingOrder[2]?.headline,
+      "Stop 3 → opens stop 3",
+    );
 
     // A first visit has nothing since a last one: no line, no markers.
     replace(JSON.stringify(guide(null)));
