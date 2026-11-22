@@ -382,25 +382,23 @@ test("Review opens the guide file in the repo workspace and remembers what you s
     "optin:acme/api": true,
   });
   await until(() => all()[0]?.status === "ready", "the guide");
-  // A guide written under the old name ("7.prtour.json") is replaced, not left beside the new one.
+  // Guides written where older versions put them are replaced, not left beside the new one.
   await mkdir(join(dir, ".pr-tour"), { recursive: true });
   await writeFile(join(dir, ".pr-tour/7.prtour.json"), "{}");
+  await writeFile(join(dir, ".pr-tour/pr-7.prtour.json"), "{}");
   assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), { opened: true });
 
-  // "pr-7": the tab is named after the file, and a bare "7" does not say it is a PR.
+  // Under .orca/, which Orca's dev watcher skips, so opening a guide of PR Tour's own repo
+  // does not reload the dev plugin. "pr-7": the tab is named after the file.
   assert.deepEqual(host.callsOf("editor.open").at(-1), {
     workspaceId: "w1",
-    path: ".pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-tour/pr-7.prtour.json",
   });
-  assert.deepEqual(
-    await readdir(join(dir, ".pr-tour")),
-    ["pr-7.prtour.json"],
-    "the old file is gone",
-  );
-  const written = JSON.parse(await readFile(join(dir, ".pr-tour/pr-7.prtour.json"), "utf8"));
+  assert.ok(!(await readdir(dir)).includes(".pr-tour"), "the old folder and its guides are gone");
+  const written = JSON.parse(await readFile(join(dir, ".orca/pr-tour/pr-7.prtour.json"), "utf8"));
   assert.equal(written.pr.number, 7);
   const exclude = await readFile(join(dir, ".git/info/exclude"), "utf8");
-  assert.ok(exclude.includes(".pr-tour/"), "the guide folder stays out of git status");
+  assert.ok(exclude.includes(".orca/pr-tour/"), "the guide folder stays out of git status");
   assert.ok(exclude.includes(".orca/pr-tour-runs/"), "run files stay out of git status");
   assert.equal(
     (host.data().storage["meta:acme/api#7"] as { lastViewedCommit?: string }).lastViewedCommit,
@@ -446,7 +444,7 @@ test("the status bar command opens the focused branch guide, writing one first w
   await until(() => host.callsOf("editor.open").length === 1, "the guide to open");
   assert.deepEqual(host.callsOf("editor.open")[0], {
     workspaceId: "w1",
-    path: ".pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-tour/pr-7.prtour.json",
   });
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 1);
   assert.equal(

@@ -105,7 +105,7 @@ list to the prompt from the worker.
 - `git cat-file --batch` output is read as latin1 (`RunOptions.stdoutEncoding` in `src/exec.ts`) so
   object sizes are byte counts and files in any encoding are written byte for byte.
 - `writeRunFiles` refuses when `.orca` or `.orca/pr-tour-runs` is a link (a repository could commit
-  one), and `.pr-tour/` and `.orca/pr-tour-runs/` are added to `.git/info/exclude` before writing.
+  one), and `.orca/pr-tour-runs/` (and the guide folders) are added to `.git/info/exclude` before writing.
   Cleanup skips a linked `.orca` too, so it never deletes outside the clone.
 - **Run files moved from `.pr-tour/runs/<pr>/` to `.orca/pr-tour-runs/<pr>/`.** Orca's dev watcher
   reloads a plugin loaded with `orca plugin dev` on any change in its folder outside `.git`, `.orca`
@@ -115,6 +115,12 @@ list to the prompt from the worker.
   (`.orca/drops`, `.orca/issue-command`), so PR Tour never removes `.orca/` itself, only
   `pr-tour-runs/<pr>` and an empty `pr-tour-runs/`. Guides stay in `.pr-tour/`; the worker removes
   a `.pr-tour/runs/` left by an older version at start.
+- **Guides moved from `.pr-tour/pr-<n>.prtour.json` to `.orca/pr-tour/pr-<n>.prtour.json`.** Same
+  watcher: opening a guide of PR Tour's own PR in its dev folder wrote it outside `.orca` and
+  reloaded the plugin. `src/open-guide.ts` refuses a linked `.orca` or `.orca/pr-tour` (as
+  `writeRunFiles` does), and on open removes that PR's old `.pr-tour/pr-<n>.prtour.json` and
+  `.pr-tour/<n>.prtour.json`, then `.pr-tour/` only if it is empty. `.git/info/exclude` gets
+  `.orca/pr-tour/`; `.pr-tour/` stays listed so guides left by older versions stay hidden.
 - Head versions are skipped for every file in the triage's skipped list (lockfiles, generated,
   whitespace-only, pure renames), binaries and deletions.
 

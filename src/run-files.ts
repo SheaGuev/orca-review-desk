@@ -9,8 +9,10 @@ import { join } from "node:path";
 import type { FileDiff } from "./diff";
 import { runOk } from "./exec";
 
-const ORCA = ".orca";
+export const ORCA = ".orca";
 export const RUNS = `${ORCA}/pr-tour-runs`;
+/** Where guides are written to be opened, under `.orca/` for the same reason as runs. */
+export const GUIDES = `${ORCA}/pr-tour`;
 /** Where runs were written before they moved under `.orca/`; removed at worker start. */
 const OLD_RUNS = ".pr-tour/runs";
 
@@ -44,13 +46,13 @@ export type RunFilesInput = {
 const deleted = (f: FileDiff) => /^deleted file mode /m.test(f.text);
 
 /** Fails unless `path` is a real folder (not a link a repository could commit), making it if missing. */
-async function realFolder(path: string): Promise<void> {
+export async function realFolder(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
   if (!(await lstat(path)).isDirectory()) throw new Error(`${path} is not a folder`);
 }
 
 /** Whether `rel` inside `cwd` exists as a folder, not a link. */
-const isRealFolder = async (cwd: string, rel: string): Promise<boolean> =>
+export const isRealFolder = async (cwd: string, rel: string): Promise<boolean> =>
   (await lstat(join(cwd, rel)).catch(() => null))?.isDirectory() ?? false;
 
 /**

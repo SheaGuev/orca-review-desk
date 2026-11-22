@@ -162,8 +162,8 @@ test("a run's folder is removed after it, and stale ones when the worker starts"
   });
   await mkdir(join(dir, ".orca/pr-tour-runs/9/head"), { recursive: true });
   await writeFile(join(dir, ".orca/pr-tour-runs/9/head/0001.txt"), "left by a crash");
-  await mkdir(join(dir, ".pr-tour"));
-  await writeFile(join(dir, ".pr-tour/pr-7.prtour.json"), "{}");
+  await mkdir(join(dir, ".orca/pr-tour"));
+  await writeFile(join(dir, ".orca/pr-tour/pr-7.prtour.json"), "{}");
 
   await removeRunFiles(dir, 7);
   assert.deepEqual(
@@ -173,8 +173,8 @@ test("a run's folder is removed after it, and stale ones when the worker starts"
   );
 
   await removeStaleRuns([dir, join(dir, "no-such-clone")]);
-  assert.deepEqual(await readdir(join(dir, ".pr-tour")), ["pr-7.prtour.json"], "guides stay");
-  assert.deepEqual(await readdir(join(dir, ".orca")), [], "Orca's own folder stays");
+  assert.deepEqual(await readdir(join(dir, ".orca/pr-tour")), ["pr-7.prtour.json"], "guides stay");
+  assert.deepEqual(await readdir(join(dir, ".orca")), ["pr-tour"], "Orca's own folder stays");
 });
 
 test("refuses to write through a .orca that is not a real folder", async () => {

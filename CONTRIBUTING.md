@@ -126,7 +126,7 @@ All six must pass. `orca plugin test .` runs the worker end to end with faked gi
 For a UI change, add a screenshot to the pull request:
 
 - Panel: `orca plugin shot local.pr-tour`
-- Guide: `orca plugin shot local.pr-tour --editor <repo>/.pr-tour/pr-<n>.prtour.json`
+- Guide: `orca plugin shot local.pr-tour --editor <repo>/.orca/pr-tour/pr-<n>.prtour.json`
 
 Both save to `.orca/shots/`.
 

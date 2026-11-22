@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { linesByFile, splitDiff, type FileDiff } from "./diff";
 import { run, runOk } from "./exec";
 import { LOCKFILES, repoSlugFromRemote } from "./repo";
-import { RUNS } from "./run-files";
+import { GUIDES, RUNS } from "./run-files";
 import type { DiffContext } from "./schema";
 
 /** A repository added to Orca as a project, on this machine. */
@@ -119,7 +119,8 @@ export async function gitCommonDir(workspacePath: string): Promise<string> {
 }
 
 /** What PR Tour writes in a clone: guides, and each run's files. */
-const HIDDEN = [".pr-tour/", `${RUNS}/`];
+// `.pr-tour/` is where older versions wrote guides; kept so any left there stay hidden.
+const HIDDEN = [`${GUIDES}/`, `${RUNS}/`, ".pr-tour/"];
 
 /**
  * Adds PR Tour's folders to the repository's own exclude list, so guides and run files never
