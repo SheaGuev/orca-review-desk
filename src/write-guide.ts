@@ -247,7 +247,7 @@ function refuseSecrets(guide: PrGuide, known: string): void {
 /** Fetches the PR, runs the agent and returns the finished guide; throws when the run fails. */
 export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
   const { clone, pr } = req;
-  const refs = await fetchPr(clone, pr);
+  const refs = await fetchPr(clone, req.repo, pr);
   try {
     return await runWithFiles(req, refs);
   } finally {

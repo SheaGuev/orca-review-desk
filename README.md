@@ -124,7 +124,10 @@ PR's files for it to read.
 Cursor and GitHub Copilot take the prompt on the command line, so their prompts carry less diff
 (one argument holds about 100k characters); the rest is read from files.
 
-The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. Guides
+The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. It is
+fetched over HTTPS from the PR's repository with `gh`'s credentials, not through your `origin`
+remote, so an SSH key that asks for approval on each use (such as Touch ID) never blocks a
+background run. Guides
 are written to `.orca/pr-tour/` in the repo. During a run, the PR's files the agent reads are written to
 `.orca/pr-tour-runs/<pr>/` and removed when it ends. Both folders are added to `.git/info/exclude`
 so they never show up in `git status`.

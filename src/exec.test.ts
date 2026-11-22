@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, assert, test } from "orca/testing";
-import { onPath, run, setRunner } from "./exec";
+import { onPath, run, setRunner, runOk } from "./exec";
 
 afterEach(() => setRunner(null));
 
@@ -39,4 +39,20 @@ test("a binary is on PATH only as an executable file in one of its folders", asy
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("a failed command's error keeps the line that says what went wrong", async () => {
+  setRunner(async () => ({
+    stdout: "",
+    stderr: [
+      "git@github.com: Permission denied (publickey).",
+      "fatal: Could not read from remote repository.",
+      "",
+      "Please make sure you have the correct access rights",
+      "and the repository exists.",
+    ].join("\n"),
+    code: 128,
+  }));
+  await assert.rejects(runOk("git", ["-C", "/repo", "fetch"]), /Permission denied \(publickey\)/);
+  setRunner(null);
 });

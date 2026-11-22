@@ -6,6 +6,17 @@ export function repoSlugFromRemote(url: string): string | null {
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
 }
 
+/**
+ * The GitHub host a remote URL points at (`git@host:o/r.git`, `ssh://git@host[:port]/o/r`,
+ * `https://host/o/r.git`), lowercase; `github.com` when there is none, for GitHub's ssh-over-443
+ * host, and for an ssh config alias (a name without a dot).
+ */
+export function githubHost(url: string): string {
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/\s]+@)?([^/:\s]+)[:/]/i.exec(url.trim());
+  const host = m?.[1]?.toLowerCase() ?? "";
+  return host.includes(".") && host !== "ssh.github.com" ? host : "github.com";
+}
+
 /** `owner/repo` (lowercase) from a search result's `repository_url`, or "" when it names none. */
 export function repoSlugFromApiUrl(url: string): string {
   const [name, owner] = url.split("/").reverse();

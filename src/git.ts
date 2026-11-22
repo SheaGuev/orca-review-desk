@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { linesByFile, splitDiff, type FileDiff } from "./diff";
 import { run, runOk } from "./exec";
-import { LOCKFILES, repoSlugFromRemote } from "./repo";
+import { githubHost, LOCKFILES, repoSlugFromRemote } from "./repo";
 import { GUIDES, RUNS } from "./run-files";
 import type { DiffContext } from "./schema";
 
@@ -24,28 +24,47 @@ export const prRefs = (number: number): PrRefs => ({
   base: `refs/pr-tour/base-${number}`,
 });
 
-/** `owner/repo` (lowercase) of the folder's `origin`, or null when it has none on GitHub. */
-export async function originSlug(path: string): Promise<string | null> {
+/** The folder's `origin` URL, or null when it has none. */
+async function originUrl(path: string): Promise<string | null> {
   const remote = await run("git", ["-C", path, "remote", "get-url", "origin"], {
     timeoutMs: 10_000,
   }).catch(() => null);
-  return remote?.code === 0 ? repoSlugFromRemote(remote.stdout) : null;
+  return remote?.code === 0 ? remote.stdout : null;
 }
 
+/** `owner/repo` (lowercase) of the folder's `origin`, or null when it has none on GitHub. */
+export async function originSlug(path: string): Promise<string | null> {
+  const url = await originUrl(path);
+  return url === null ? null : repoSlugFromRemote(url);
+}
+
+/**
+ * Fetches the PR's head and base into `prRefs`, over HTTPS from `repo` (`owner/repo`, the PR's
+ * own, not origin's, which may be an old name or a fork) with gh's credentials. Never through
+ * origin: an ssh key that asks for approval on each use (Touch ID) fails in a background run.
+ * The empty `credential.helper=` drops any other helper, so no keychain prompt either. The host is
+ * origin's, for GitHub Enterprise.
+ */
 export async function fetchPr(
   clone: Clone,
+  repo: string,
   pr: { number: number; baseRefName: string },
 ): Promise<PrRefs> {
   const refs = prRefs(pr.number);
+  const host = githubHost((await originUrl(clone.path)) ?? "");
   await runOk(
     "git",
     [
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.helper=!gh auth git-credential",
       "-C",
       clone.path,
       "fetch",
       "--no-tags",
       "--quiet",
-      "origin",
+      `https://${host}/${repo}.git`,
       `+refs/pull/${pr.number}/head:${refs.head}`,
       `+refs/heads/${pr.baseRefName}:${refs.base}`,
     ],

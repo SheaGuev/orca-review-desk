@@ -40,7 +40,7 @@ async function save(deps: Deps, key: string, draft: Draft): Promise<void> {
 async function prFilesAt(deps: Deps, guide: StoredGuide, d: PrDetails) {
   const clone = await deps.clones.find(guide.pr.repo);
   if (!clone) throw new Error(`No local clone of ${guide.pr.repo} in Orca to check the diff`);
-  return prFiles(clone.path, await fetchPr(clone, d));
+  return prFiles(clone.path, await fetchPr(clone, guide.pr.repo, d));
 }
 
 type DiffNow = {

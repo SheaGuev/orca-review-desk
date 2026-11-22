@@ -291,6 +291,15 @@ To confirm on a real install (open in the table above):
   prompt fits `limit` (`write-guide.ts` passes `maxPromptChars`); without a limit the reply is still
   capped at 120,000. `runAgent` refuses an argv prompt over `maxPromptChars` before spawning
   anything ("The prompt is too long for Cursor's command line (…)"), row reason "prompt too long".
+- **Fetching**: `fetchPr` no longer fetches through `origin` (an SSH key needing Touch ID per use
+  failed background runs with "Please make sure you have the correct access rights"). It runs
+  `git -c credential.helper= -c credential.helper=!gh auth git-credential -C <clone> fetch
+  --no-tags --quiet https://<host>/<owner>/<repo>.git …` with the PR's own `owner/repo` and
+  origin's host (`githubHost`, `github.com` unless origin names a GitHub Enterprise host). The
+  empty helper drops any other credential helper first. `verify-agent`'s clone maps that URL to its
+  local origin with `url.<origin>.insteadOf`. `runOk`'s error keeps the first stderr line and the
+  last two (blank lines dropped, 500 characters at most), so git's "Permission denied (publickey)"
+  is no longer cut.
 - Fixed: each agent's label and `toolEvents` live in `src/agent-names.ts` (no Node imports), which
   `src/agent.ts` builds `AGENTS` from and `editor/parts.ts` reads, so a guide's provenance and
   coverage note name whichever agent wrote it.

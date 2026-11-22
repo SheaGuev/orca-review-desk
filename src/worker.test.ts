@@ -939,6 +939,21 @@ test("diff.get fetches the PR first when the clone lacks the guide's commit", as
   assert.deepEqual(diff.lines, ["@@ -1 +1,2 @@", " # api", "+notes"]);
 });
 
+test("PRs are fetched over HTTPS with gh's credentials, never through origin's SSH", async () => {
+  const { calls } = await readyGuide();
+  const fetches = calls.filter((c) => c.cmd === "git" && c.args.includes("fetch"));
+  assert.ok(fetches.length > 0);
+  for (const f of fetches) {
+    // The clone's origin is git@github.com:old-owner/api.git; the PR lives at acme/api.
+    assert.ok(f.args.includes("https://github.com/acme/api.git"), f.args.join(" "));
+    assert.ok(!f.args.includes("origin"), "no SSH key or agent prompt in a background run");
+    const helpers = f.args.filter(
+      (a, i) => f.args[i - 1] === "-c" && a.startsWith("credential.helper="),
+    );
+    assert.deepEqual(helpers, ["credential.helper=", "credential.helper=!gh auth git-credential"]);
+  }
+});
+
 test("diff.get refuses a commit that is not a commit id", async () => {
   const { worker } = await readyGuide();
   await assert.rejects(

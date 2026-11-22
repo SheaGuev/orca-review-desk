@@ -201,11 +201,27 @@ export function run(cmd: string, args: string[], options?: RunOptions): Promise<
   return runner(cmd, args, options);
 }
 
+const DETAIL_LIMIT = 500;
+
+/**
+ * A failed command's output in one line: its first line (often the one that says what went wrong,
+ * as git's "Permission denied (publickey)") and its last two, blank lines left out.
+ */
+function failureDetail(output: string): string {
+  const lines = output
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const kept = lines.length > 3 ? [lines[0], "…", ...lines.slice(-2)] : lines;
+  const detail = kept.join(" ");
+  return detail.length > DETAIL_LIMIT ? `${detail.slice(0, DETAIL_LIMIT - 1)}…` : detail;
+}
+
 /** Runs and returns stdout, throwing with stderr when the command fails. */
 export async function runOk(cmd: string, args: string[], options?: RunOptions): Promise<string> {
   const result = await run(cmd, args, options);
   if (result.code !== 0) {
-    const detail = (result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ");
+    const detail = failureDetail(result.stderr || result.stdout);
     throw new Error(`${cmd} ${args[0] ?? ""} failed: ${detail || `exit ${result.code}`}`);
   }
   return result.stdout;

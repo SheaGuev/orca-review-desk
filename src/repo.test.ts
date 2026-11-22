@@ -1,6 +1,7 @@
 import { assert, test } from "orca/testing";
 import {
   countOwnedFiles,
+  githubHost,
   isLockfileOnly,
   lockfileSource,
   ownersOf,
@@ -16,6 +17,17 @@ test("reads owner/repo from ssh and https remotes", () => {
   assert.equal(repoSlugFromRemote("ssh://git@github.com/acme/web.app.git"), "acme/web.app");
   assert.equal(repoSlugFromRemote("https://gitlab.com/acme/api.git"), null);
   assert.equal(repoSlugFromApiUrl("https://api.github.com/repos/Acme/Api"), "acme/api");
+});
+
+test("reads the GitHub host from a remote, github.com when it names none", () => {
+  assert.equal(githubHost("git@github.com:acme/api.git\n"), "github.com");
+  assert.equal(githubHost("git@GHE.Example.com:acme/api.git"), "ghe.example.com");
+  assert.equal(githubHost("ssh://git@ghe.example.com:2222/acme/api"), "ghe.example.com");
+  assert.equal(githubHost("https://ghe.example.com/acme/api.git"), "ghe.example.com");
+  assert.equal(githubHost("https://user@ghe.example.com/acme/api.git"), "ghe.example.com");
+  assert.equal(githubHost("ssh://git@ssh.github.com:443/acme/api.git"), "github.com");
+  assert.equal(githubHost("git@github-work:acme/api.git"), "github.com");
+  assert.equal(githubHost(""), "github.com");
 });
 
 test("spots lockfile-only changes", () => {

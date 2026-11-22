@@ -55,7 +55,8 @@ const exists = (path: string) =>
 
 /**
  * An "origin" with `main` and the PR at `refs/pull/7/head`, as GitHub has it, and a clone of it on
- * `main`: `writeGuide` fetches the PR into `refs/pr-tour/*` from there, as it does from GitHub.
+ * `main`: `writeGuide` fetches the PR into `refs/pr-tour/*` from there (the clone rewrites the PR's
+ * GitHub URL to it), as it does from GitHub.
  */
 async function makeFixture(root: string) {
   const fixture = fixturePr(BUDGET);
@@ -74,6 +75,8 @@ async function makeFixture(root: string) {
   await git(origin, "update-ref", `refs/pull/${PR}/head`, head);
   await git(origin, "checkout", "--quiet", "main");
   await runOk("git", ["clone", "--quiet", origin, clone], { timeoutMs: 60_000 });
+  // `fetchPr` fetches from the PR's GitHub URL; the clone sends that to the local origin.
+  await git(clone, "config", `url.${origin}.insteadOf`, "https://github.com/fixture/verify.git");
   return { root, fixture, clone, head };
 }
 
