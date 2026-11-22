@@ -61,7 +61,12 @@ export type QueueItem = {
 
 export type RepoState = { repo: string; optIn: boolean | null; hasClone: boolean; pending: number };
 
-export type Notice = { tone: "warning" | "danger"; text: string };
+export type Notice = {
+  tone: "warning" | "danger";
+  text: string;
+  /** The repository the notice offers to turn automatic guides back on for. */
+  turnOn?: string;
+};
 
 export type QueueState = {
   /** The reviews you owe, in the order to do them. */

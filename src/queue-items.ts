@@ -78,7 +78,9 @@ export function manualReason(
   if (d.isDraft && settings.skipDrafts) return "Draft";
   // A stranger's PR (say, through a CODEOWNERS team request) is not run unasked. Your own are.
   if (lane !== "authored" && !TRUSTED.has(pr.association ?? ""))
-    return pr.association === null ? "Author's access unknown" : "Author is not a collaborator";
+    return pr.association === null
+      ? "Couldn't check the author's access"
+      : "Author is not a collaborator";
   if (lane === "user" && !settings.autoRequested) return "Automatic guides are off";
   if (lane === "team") {
     if (!settings.autoTeams) return "Automatic team guides are off";

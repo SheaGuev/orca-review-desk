@@ -1263,7 +1263,7 @@ test("an unknown author association counts as untrusted for automatic runs", asy
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 0);
-  assert.equal(latest()?.notQueued[0]?.manualReason, "Author's access unknown");
+  assert.equal(latest()?.notQueued[0]?.manualReason, "Couldn't check the author's access");
 });
 
 test("a run that changes .git/hooks stores nothing and turns the repository's automatic runs off", async () => {
@@ -1293,4 +1293,11 @@ test("a run that changes .git/hooks stores nothing and turns the repository's au
   assert.equal(latest()?.repos[0]?.optIn, false);
   const runs = calls.filter((c) => c.cmd === "claude").length;
   assert.equal(runs, 1);
+  // The notice is the only way back: it names the repo once and carries the control to turn it on.
+  assert.equal(notice?.turnOn, "acme/api", "the notice offers turning automatic guides back on");
+  assert.equal(
+    notice?.text.split("acme/api").length,
+    2,
+    `the repository is named once: ${notice?.text}`,
+  );
 });

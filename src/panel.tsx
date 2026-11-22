@@ -60,6 +60,9 @@ const hasGuide = (item: QueueItem) => item.status === "ready" || item.status ===
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+const turnOn = (repo: string) => () =>
+  actOnQueue(() => plugin.request("repo.setOptIn", { repo, optIn: true }));
+
 function OptIn({ repo, agent }: { repo: RepoState; agent: string }) {
   return (
     <Callout tone="accent" title={`Keep review guides up to date in ${repo.repo}?`}>
@@ -69,13 +72,7 @@ function OptIn({ repo, agent }: { repo: RepoState; agent: string }) {
           Uses {agent}.
         </Text>
         <Row gap="xs">
-          <Button
-            onPress={() =>
-              actOnQueue(() => plugin.request("repo.setOptIn", { repo: repo.repo, optIn: true }))
-            }
-          >
-            Turn on
-          </Button>
+          <Button onPress={turnOn(repo.repo)}>Turn on</Button>
           <Button
             variant="ghost"
             onPress={() =>
@@ -385,7 +382,11 @@ function Loaded({ s }: { s: QueueState }) {
           tone={s.notice.tone}
           icon={s.notice.tone === "danger" ? "error" : "warning"}
           title={s.notice.text}
-        />
+        >
+          {s.notice.turnOn ? (
+            <Button onPress={turnOn(s.notice.turnOn)}>Turn guides back on</Button>
+          ) : null}
+        </Callout>
       ) : null}
       {s.repos
         .filter((r) => r.optIn === null && r.hasClone)

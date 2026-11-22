@@ -78,7 +78,8 @@ function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null 
   if (tampered)
     return {
       tone: "danger",
-      text: `The run for ${tampered.key} changed ${someOf(tampered.paths)} · automatic guides are off for ${tampered.repo} until you turn them back on`,
+      text: `The run for ${tampered.key.slice(tampered.repo.length)} changed ${someOf(tampered.paths)} in ${tampered.repo} · automatic guides are off there until you turn them back on`,
+      turnOn: tampered.repo,
     };
   if (state.lastError)
     return {

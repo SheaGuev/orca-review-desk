@@ -69,7 +69,7 @@ test("only PRs by the repository's owners, members and collaborators get automat
     assert.equal(reason("user", trusted), null, trusted);
   for (const outside of ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"])
     assert.equal(reason("user", outside), "Author is not a collaborator", outside);
-  assert.equal(reason("user", null), "Author's access unknown", "fails safe");
+  assert.equal(reason("user", null), "Couldn't check the author's access", "fails safe");
   assert.equal(reason("authored", null), null, "your own PRs count as trusted");
 });
 
