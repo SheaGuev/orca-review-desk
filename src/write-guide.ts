@@ -1,6 +1,6 @@
 // One agent run for one PR: fetch it, decide what the tour skips, build the prompt, ask the agent
 // (once more if its reply does not fit), and fill in everything the agent is never trusted with.
-import { runAgent } from "./agent";
+import { diffBudget, runAgent, type AgentReply } from "./agent";
 import { enforceCoverage } from "./coverage";
 import {
   budgetDiff,
@@ -25,8 +25,8 @@ import {
 import { watchGit } from "./git-guard";
 import { myReviewComments, type PrDetails } from "./github";
 import type { PrPlace, Triage } from "./pr-data";
-import { buildPrompt, buildRepairPrompt, type SinceInput } from "./prompt";
-import { removeRunFiles, writeRunFiles, type RunFiles } from "./run-files";
+import { buildPrompt, buildRepairPrompt, type PromptInput, type SinceInput } from "./prompt";
+import { removeRunFiles, runDir, writeRunFiles, type RunFiles } from "./run-files";
 import {
   extractJson,
   parseAgentGuide,
@@ -59,6 +59,10 @@ export type GuideRequest = {
   lastViewedCommit: () => Promise<string | undefined>;
   triage: (at: PrPlace, commit: string, baseRef: string) => Promise<Triage>;
   log: (text: string) => void;
+  /** Characters of diff the prompt may carry, in place of the agent's own; for `verify-agent`. */
+  diffBudget?: number;
+  /** Told each agent reply, both rounds; for `verify-agent`, which checks the tools called. */
+  onReply?: (reply: AgentReply) => void;
 };
 
 /** What changed since the commit the reviewer last saw; null when that is the head, or gone. */
@@ -136,6 +140,7 @@ async function askAgent(
 ): Promise<{ guide: AgentGuide; toolCalls: ToolCall[] }> {
   const { harness, model } = req.settings;
   const first = await runAgent(harness, model, prompt, req.clone.path);
+  req.onReply?.(first);
   const firstRead = readReply(first.text, ctx);
   if (firstRead.ok) return { guide: firstRead.guide, toolCalls: first.toolCalls };
   req.log(
@@ -147,6 +152,7 @@ async function askAgent(
     buildRepairPrompt(prompt, first.text, firstRead.problems),
     req.clone.path,
   );
+  req.onReply?.(second);
   const loose = parseAgentGuide(extractJson(second.text), undefined, { words: false, tour: false });
   if (!loose.ok) throw mismatch(loose.problems);
   const settled = settle(loose.guide, ctx);
@@ -270,6 +276,19 @@ async function prepareRun(
   });
 }
 
+/**
+ * The prompt's length without any diff: every file listed as left out, the most the rest of the
+ * prompt can take, so the diff budget of an argv agent leaves room for it.
+ */
+function promptOverhead(
+  input: Omit<PromptInput, "inPrompt" | "outside" | "run">,
+  files: readonly FileDiff[],
+): number {
+  const dir = runDir(input.pr.number);
+  const diffs = new Map(files.map((f) => [f.path, `${dir}/diffs/0000.diff`]));
+  return buildPrompt({ ...input, inPrompt: [], outside: [...files], run: { dir, diffs } }).length;
+}
+
 async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
   const { key, repo, clone, pr, settings } = req;
   const { files, lines, ctx: base } = await prFiles(clone.path, refs);
@@ -280,20 +299,21 @@ async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
     skipped: new Map(triage.skipped.map((f) => [f.path, f.reason])),
     risky: new Map([...triage.risky].filter(([path]) => changed.includes(path))),
   };
-  const budget = budgetDiff(files);
   const since = await sinceInput(req, refs.head);
-  const run = await prepareRun(req, refs, files, budget.outside, triage.skipped);
-  const prompt = buildPrompt({
+  const input = {
     repo,
     pr,
-    inPrompt: budget.inPrompt,
-    outside: budget.outside,
     since,
     extraInstructions: settings.extraInstructions,
-    run,
     skipped: triage.skipped,
     risky: rules.risky,
-  });
+  };
+  const budget = budgetDiff(
+    files,
+    req.diffBudget ?? diffBudget(settings.harness, promptOverhead(input, files)),
+  );
+  const run = await prepareRun(req, refs, files, budget.outside, triage.skipped);
+  const prompt = buildPrompt({ ...input, inPrompt: budget.inPrompt, outside: budget.outside, run });
   req.log(
     `generating ${key} at ${pr.headRefOid.slice(0, 7)} with ${settings.harness}${settings.model ? ` (${settings.model})` : ""}; skipped by design: ${triage.skipped.map((f) => `${f.path} (${f.reason})`).join(", ") || "none"}; must be deep: ${[...rules.risky.keys()].join(", ") || "none"}`,
   );

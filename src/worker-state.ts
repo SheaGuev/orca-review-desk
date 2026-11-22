@@ -24,6 +24,8 @@ export type WorkerState = {
   lastError: string | null;
   /** The last agent run failed for want of a sign-in; cleared by the next run that works. */
   agentSignedOut: boolean;
+  /** The label of the agent whose CLI the last run could not find; cleared by the next run that works. */
+  agentMissing: string | null;
   /** QueueState.openKey: the guide last opened or moved through. */
   openKey: string | null;
   /** The last run that changed its clone's git config or hooks; cleared when its repo is turned on. */
@@ -41,6 +43,7 @@ export const createWorkerState = (settings: Settings, runsToday: number): Worker
   checkedAt: null,
   lastError: null,
   agentSignedOut: false,
+  agentMissing: null,
   openKey: null,
   tampered: null,
 });
@@ -66,7 +69,10 @@ const someOf = (paths: readonly string[]): string =>
     ? `${paths.slice(0, 2).join(", ")} and ${paths.length - 2} more`
     : paths.join(", ");
 
-/** The one status line the panel shows: a tampering run, GitHub unreachable, agent signed out, daily limit. */
+/**
+ * The one status line the panel shows: a tampering run, GitHub unreachable, agent not installed or
+ * signed out, daily limit.
+ */
 function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null {
   const { settings, checkedAt, tampered } = state;
   if (tampered)
@@ -78,6 +84,11 @@ function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null 
     return {
       tone: "warning",
       text: `Couldn't reach GitHub${checkedAt === null ? "" : ` · last checked ${clock(checkedAt)}`}`,
+    };
+  if (state.agentMissing)
+    return {
+      tone: "danger",
+      text: `${state.agentMissing} isn't installed · install it, then Generate`,
     };
   if (state.agentSignedOut)
     return {

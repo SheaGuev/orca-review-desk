@@ -21,8 +21,9 @@ until you press **Post to GitHub**.
 
 ## Install
 
-You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and `claude` or `codex` signed
-in.
+You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and one agent CLI installed and
+signed in: `claude` (Claude Code) or `codex` (Codex). Cursor, GitHub Copilot, Gemini CLI, Factory
+Droid, Qwen Code and Pi are implemented and will be enabled once each is verified.
 
 ```sh
 orca plugin install adamthewilliam/orca-pr-tour
@@ -105,12 +106,12 @@ In Settings → Plugins → PR Tour:
 
 ## What the agent can do
 
-The agent runs in the background with read-only tools:
+The agent runs in the background with read-only tools. No agent gets a shell: PR Tour writes the
+PR's files for it to read.
 
-- Claude Code: `claude -p --tools Read,Grep,Glob,Bash`, with Bash limited to
-  `git diff/show/log`, no MCP servers, no project settings from the PR's repo and no saved
-  session.
-- Codex: `codex exec --sandbox read-only`.
+- Claude Code: `claude -p` with only `Read`, `Grep` and `Glob`, no MCP servers, no project settings
+  or hooks, and no saved session.
+- Codex: `codex exec --sandbox read-only`, its own OS sandbox.
 
 The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. Guides
 are written to `.pr-tour/` in the repo, which is added to `.git/info/exclude` so it never shows up

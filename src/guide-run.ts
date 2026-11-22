@@ -1,5 +1,6 @@
 // One run from the queue: has the agent write the guide for a PR, stores it, and brings the
 // queue row up to date. A failure is recorded on the row, never thrown.
+import { AgentMissing } from "./agent";
 import type { Clones } from "./clones";
 import { message } from "./errors";
 import { GitTampered } from "./git-guard";
@@ -79,6 +80,7 @@ async function finish(
   const { guide } = written;
   const stored = await keep(store, key, guide);
   state.agentSignedOut = false;
+  state.agentMissing = null;
   // Ready before the tab asks; a failure here is retried when the tab asks.
   void deps.prData
     .breakdown(stored, key, stored.pr.commit)
@@ -133,6 +135,7 @@ async function fail(deps: Deps, key: string, e: unknown, head: string | undefine
   const { state, store } = deps;
   const error = message(e);
   if (SIGNED_OUT.test(error)) state.agentSignedOut = true;
+  if (e instanceof AgentMissing) state.agentMissing = e.label;
   deps.log(`${key}: ${error}`);
   if (e instanceof GitTampered) await stopAutomatic(deps, key, e.paths);
   const meta = await store.meta(key);

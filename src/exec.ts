@@ -1,6 +1,8 @@
 // Running git, gh and the agent CLI from the worker. Tests swap the runner with setRunner.
 import { spawn } from "node:child_process";
+import { access, constants, stat } from "node:fs/promises";
 import { userInfo } from "node:os";
+import { delimiter, join } from "node:path";
 
 export type RunOptions = {
   cwd?: string;
@@ -118,14 +120,16 @@ const BASE_ENV = [
   "PROGRAMDATA",
 ];
 
-/** Never passed on, whatever a harness asks for: they reach GitHub, npm or AWS as the person. */
+/**
+ * Never passed on, whatever a harness asks for: they reach GitHub or npm as the person. (Cloud
+ * credentials such as `AWS_*` are left out unless an agent's spec keeps them, as Claude on Bedrock.)
+ */
 const NEVER_ENV = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
   "NPM_TOKEN",
-  "AWS_*",
 ];
 
 const matches = (name: string, patterns: readonly string[]): boolean => {
@@ -152,10 +156,45 @@ export function cleanEnv(keep: readonly string[]): Record<string, string> {
   return env;
 }
 
-let runner: Runner = defaultRunner;
+/** Whether `file` is a file this user may run. */
+async function runnable(file: string): Promise<boolean> {
+  try {
+    if (!(await stat(file)).isFile()) return false;
+    await access(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-export function setRunner(next: Runner | null): void {
+/** Whether `cmd` is an executable file in a folder of `path` (with Windows' PATHEXT endings). */
+export async function onPath(cmd: string, path: string): Promise<boolean> {
+  const endings =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean)]
+      : [""];
+  for (const dir of path.split(delimiter).filter(Boolean))
+    for (const ending of endings) if (await runnable(join(dir, cmd + ending))) return true;
+  return false;
+}
+
+const lookUp = (cmd: string): Promise<boolean> => onPath(cmd, pathValue ?? process.env.PATH ?? "");
+
+let runner: Runner = defaultRunner;
+let installed = lookUp;
+
+/**
+ * Swaps how commands run, for tests. A test's runner stands in for every binary, so each counts as
+ * installed unless `has` says otherwise.
+ */
+export function setRunner(next: Runner | null, has?: (cmd: string) => boolean): void {
   runner = next ?? defaultRunner;
+  installed = next ? async (cmd) => has?.(cmd) ?? true : lookUp;
+}
+
+/** Whether `cmd` is on the PATH agent runs get (the login shell's, once `loadLoginPath` ran). */
+export function isInstalled(cmd: string): Promise<boolean> {
+  return installed(cmd);
 }
 
 export function run(cmd: string, args: string[], options?: RunOptions): Promise<RunResult> {

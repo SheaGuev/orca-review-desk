@@ -22,5 +22,9 @@ test("a failed run's error becomes a short reason a person can act on", () => {
     failureReason("The agent run changed .git/hooks/pre-commit in the clone. Nothing was stored"),
     "changed the clone's git files",
   );
+  assert.equal(
+    failureReason("Codex isn't installed: no codex on PATH · install it, then Generate"),
+    "not installed",
+  );
   assert.equal(failureReason(null), "see logs");
 });

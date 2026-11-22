@@ -1,5 +1,5 @@
 import { assert, test } from "orca/testing";
-import { agentLabel, readSettings } from "./settings";
+import { agentLabel, asHarness, harnessName, readSettings } from "./settings";
 import { statusBar } from "./status-bar";
 import type { QueueItem } from "./protocol";
 
@@ -25,6 +25,15 @@ test("the agent label names the CLI and the model, if one is set", () => {
     agentLabel({ harness: "claude", model: "claude-opus-5-5" }),
     "Claude Code · claude-opus-5-5",
   );
+});
+
+test("only verified agents can be chosen; any other falls back to Claude Code", () => {
+  assert.equal(asHarness("codex"), "codex");
+  assert.equal(asHarness("claude"), "claude");
+  for (const id of ["cursor", "copilot", "gemini", "droid", "qwen", "pi", "nope", 3, null])
+    assert.equal(asHarness(id), "claude", `${String(id)} was accepted`);
+  assert.equal(harnessName("codex"), "Codex");
+  assert.equal(harnessName("gemini"), "Gemini CLI");
 });
 
 const item = (over: Partial<QueueItem>) =>

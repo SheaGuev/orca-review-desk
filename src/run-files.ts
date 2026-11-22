@@ -9,6 +9,9 @@ import { runOk } from "./exec";
 
 const RUNS = ".pr-tour/runs";
 
+/** A run's folder, relative to the clone. */
+export const runDir = (pr: number): string => `${RUNS}/${pr}`;
+
 export type RunFiles = {
   /** The run's folder, relative to the clone: `.pr-tour/runs/<pr>`. */
   dir: string;
@@ -67,7 +70,7 @@ function splitBatch(out: string, count: number): (Buffer | null)[] {
 /** Writes the run's files and its `index.txt`; one git process reads every PR version. */
 export async function writeRunFiles(input: RunFilesInput): Promise<RunFiles> {
   const { cwd } = input;
-  const dir = `${RUNS}/${input.pr}`;
+  const dir = runDir(input.pr);
   await realFolder(join(cwd, ".pr-tour"));
   await realFolder(join(cwd, RUNS));
   await rm(join(cwd, dir), { recursive: true, force: true });

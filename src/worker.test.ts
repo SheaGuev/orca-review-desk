@@ -50,6 +50,8 @@ function fakeTools(opts: {
   association?: string | null;
   /** What the agent CLI does before it answers, such as writing into the clone. */
   agentDoes?: () => Promise<void>;
+  /** Which binaries are on PATH; all of them when left out. */
+  installed?: (cmd: string) => boolean;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -176,7 +178,7 @@ function fakeTools(opts: {
         ]),
       );
     return { stdout: "", stderr: `unexpected ${cmd} ${args.join(" ")}`, code: 1 };
-  });
+  }, opts.installed);
   return calls;
 }
 
@@ -236,6 +238,7 @@ async function setup(
     agentGate?: Promise<void>;
     association?: string | null;
     agentDoes?: () => Promise<void>;
+    installed?: (cmd: string) => boolean;
     /** Runs on the clone's folder before the worker starts. */
     before?: (dir: string) => Promise<void>;
   } = {},
@@ -638,6 +641,24 @@ test("an agent with no sign-in shows as the notice", async () => {
     tone: "danger",
     text: "Claude Code is not signed in · sign in from a terminal, then Generate",
   });
+});
+
+test("an agent CLI that is not installed shows as the notice and the row's reason", async () => {
+  const { latest, all, calls } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      installed: (cmd) => cmd !== "claude",
+    },
+  );
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.deepEqual(latest()?.notice, {
+    tone: "danger",
+    text: "Claude Code isn't installed · install it, then Generate",
+  });
+  assert.match(all()[0]?.error ?? "", /^Claude Code isn't installed/);
+  assert.equal(calls.filter((c) => c.cmd === "claude").length, 0, "the agent never ran");
 });
 
 const posts = (calls: Call[]) => calls.filter((c) => c.cmd === "gh" && c.args.includes("POST"));

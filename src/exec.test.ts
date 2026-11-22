@@ -1,5 +1,8 @@
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { afterEach, assert, test } from "orca/testing";
-import { run, setRunner } from "./exec";
+import { onPath, run, setRunner } from "./exec";
 
 afterEach(() => setRunner(null));
 
@@ -16,5 +19,24 @@ test("an env given to a run replaces the worker's environment instead of adding 
     assert.equal(env.PR_TOUR_TEST_SECRET, undefined);
   } finally {
     delete process.env.PR_TOUR_TEST_SECRET;
+  }
+});
+
+test("a binary is on PATH only as an executable file in one of its folders", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pr-tour-path-"));
+  try {
+    await writeFile(join(dir, "agent"), "#!/bin/sh\n");
+    await chmod(join(dir, "agent"), 0o755);
+    await writeFile(join(dir, "notes"), "");
+    await chmod(join(dir, "notes"), 0o644);
+    await mkdir(join(dir, "folder"));
+    const path = ["/nowhere", dir].join(delimiter);
+    assert.equal(await onPath("agent", path), true);
+    assert.equal(await onPath("missing", path), false);
+    assert.equal(await onPath("folder", path), false);
+    if (process.platform !== "win32") assert.equal(await onPath("notes", path), false);
+    assert.equal(await onPath("agent", ""), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

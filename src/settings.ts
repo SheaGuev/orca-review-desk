@@ -1,11 +1,11 @@
 // The plugin's settings as the worker uses them. The keys and defaults mirror `contributes.settings`
 // in orca-plugin.json; Orca fills declared defaults in, so the ones here only cover a value of the
 // wrong type.
-import { asHarness, type Harness } from "./agent";
+import { AGENTS, AGENT_IDS, type AgentId } from "./agent";
 import { parseTeams } from "./repo";
 
 export type Settings = {
-  harness: Harness;
+  harness: AgentId;
   model: string;
   autoRequested: boolean;
   teams: string[];
@@ -17,6 +17,11 @@ export type Settings = {
   dailyLimit: number;
   extraInstructions: string;
 };
+
+/** A verified agent's id (the ones Settings offers); anything else is Claude Code. */
+export function asHarness(value: unknown): AgentId {
+  return AGENT_IDS.find((id) => id === value && AGENTS[id].verified) ?? "claude";
+}
 
 const DEFAULT_TEAM_MIN_LINES = 200;
 const DEFAULT_DAILY_LIMIT = 20;
@@ -37,10 +42,8 @@ export function readSettings(s: Readonly<Record<string, unknown>>): Settings {
   };
 }
 
-const HARNESS_NAME: Record<Harness, string> = { claude: "Claude Code", codex: "Codex" };
-
 /** "Claude Code": the agent CLI as a person names it. */
-export const harnessName = (harness: Harness): string => HARNESS_NAME[harness];
+export const harnessName = (harness: AgentId): string => AGENTS[harness].label;
 
 /** "Claude Code · claude-opus-5-5": the agent and the model it is told to use, if any. */
 export const agentLabel = (s: Pick<Settings, "harness" | "model">): string =>

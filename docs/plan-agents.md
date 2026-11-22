@@ -1,6 +1,7 @@
 # PR Tour: more agents, technical plan
 
-Status: agreed scope, Phases 0, 1 and 2 done, nothing else started. Written 2026-11-22.
+Status: agreed scope, Phases 0 to 5 built; claude and codex verified, the other six specs wait for
+`verify-agent` runs. Written 2026-11-22.
 
 Today PR Tour runs two agent CLIs, Claude Code and Codex (`src/agent.ts`). Users of other agents
 read that as "Claude Code only". This plan adds a first wave of eight agents and a repeatable way
@@ -36,8 +37,9 @@ a "custom command" harness, giving agents git history (`git log`, blame).
 | 0 | Agent runs | `src/agent.ts`, `orca-plugin.json` | Done: model default `""`; Claude retries once without `--strict-mcp-config` under an enterprise MCP config |
 | 1 | Prepared files | new `src/run-files.ts`, `src/prompt.ts`, `src/diff.ts`, `src/write-guide.ts`, `src/worker.ts`, `src/exec.ts`, `src/agent.ts` | Done: PR files and overflow diffs written to `.pr-tour/runs/<pr>/`; prompt drops git commands; Claude loses `Bash` |
 | 2 | Safety | `src/exec.ts`, `src/agent.ts`, `src/github.ts`, `src/queue-items.ts`, `src/queue-check.ts`, new `src/secrets.ts`, new `src/git-guard.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/post-review.ts` | Done: clean agent env, secret scan of replies and reviews, auto-run only for trusted authors, `.git` tamper check |
-| 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `orca-plugin.json` | `Harness` union becomes a spec table; still claude and codex only |
-| 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `README.md` | Conformance script; add cursor, copilot, gemini, droid, qwen, pi |
+| 3 | Spec table | `src/agent.ts`, `src/settings.ts`, `src/exec.ts`, `src/write-guide.ts`, `src/guide-run.ts`, `src/worker-state.ts`, `src/failure.ts` | Done: `Harness` union became the `AGENTS` table; "isn't installed" notice; argv diff budget |
+| 4 | First wave | `src/agent.ts`, new `scripts/verify-agent.ts`, `scripts/verify-checks.ts` | Done: specs for cursor, copilot, gemini, droid, qwen, pi (unverified, not offered); conformance script |
+| 5 | Settings, README | `orca-plugin.json`, `README.md`, `THIRD_PARTY_NOTICES.md` | Done: Settings lists verified agents only; README and Orca credit |
 
 ## Phase 0: fixes (done, uncommitted)
 
@@ -139,7 +141,11 @@ list to the prompt from the worker.
   `USERPROFILE`, `TEMP`, ...). Names compare without case. `GH_TOKEN`, `GITHUB_TOKEN`,
   `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `NPM_TOKEN` and `AWS_*` are dropped even if a
   harness pattern matched them, so Claude on Bedrock (AWS credentials from the environment) does
-  not work; git and gh keep the worker's environment.
+  not work; git and gh keep the worker's environment. **Fixed in Phase 3**: `AWS_*` left
+  `NEVER_ENV` (it is still never in the base list), and Claude's spec keeps `AWS_*` while
+  `CLAUDE_CODE_USE_BEDROCK` is on, and `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `VERTEX_*`,
+  `CLOUD_ML_REGION` while `CLAUDE_CODE_USE_VERTEX` is on (set and not `0`/`false`, in the worker's
+  environment). Without the flag they stay stripped; other agents never get them.
 - Secrets: the whole finished guide (`JSON.stringify`) is scanned, not only the raw reply; the error
   names the kind ("a GitHub token"), never the value. `postReview` checks the summary and every
   comment before the first request and throws, so the guide tab shows "refused" with which part
@@ -188,6 +194,30 @@ export const AGENTS: Record<AgentId, AgentSpec> = { claude: …, codex: … };
 - Claude gains `--settings {"disableAllHooks":true}` and `--permission-mode dontAsk`, as Orca does:
   `--setting-sources user` still loads the person's own hooks, which have no business running here.
 
+**As built** (differences from the above):
+
+- Extra fields: `verified` (passed `verify-agent`; only these are in Settings and accepted by
+  `asHarness`), `envWhen` (variables kept while a flag variable is on: Claude's Bedrock/Vertex) and
+  `toolEvents` (the reply reports tool calls; only Claude). `AGENT_IDS` lists the ids in order.
+- `asHarness` moved to `src/settings.ts`. The manifest's `enum`/`enumLabels` equal the *verified*
+  ids and labels (test in `src/agent.test.ts`), not the whole table.
+- `runAgent` loops `for (attempt = 0; ; attempt++)` and stops unless `spec.retry` says otherwise;
+  Claude's `args` drops `--strict-mcp-config` for `--disallowedTools mcp__*` when `attempt > 0`.
+  `--settings {"disableAllHooks":true}` and `--permission-mode dontAsk` were already in Phase 1/2.
+- Not installed: `runAgent` checks `isInstalled(binary)` (`src/exec.ts`: an executable file in a
+  folder of the login-shell PATH, with `PATHEXT` on Windows) before it spawns anything, and throws
+  `AgentMissing` ("Codex isn't installed: no codex on PATH · install it, then Generate"). The check
+  sits in `runAgent`, so it runs after the PR fetch and run files, not before `writeGuide`. The row
+  reason is "not installed" (`src/failure.ts`); `WorkerState.agentMissing` holds the agent's label
+  and shows "Codex isn't installed · install it, then Generate" as the danger notice, cleared by the
+  next run that works. Tests: `setRunner(fake, has?)` makes every binary count as installed unless
+  `has` says otherwise.
+- Budget: `diffBudget(id, overhead)`; argv agents have `maxPromptChars: 100_000` (131,072 bytes per
+  argument less room for multi-byte text). `overhead` is the length of the prompt built with every
+  file listed as left out and no diff (`promptOverhead` in `src/write-guide.ts`), the most the
+  non-diff part can be. `GuideRequest.diffBudget` overrides it and `GuideRequest.onReply` sees each
+  reply, both for `verify-agent`.
+
 ## 4. First wave
 
 | Agent | Command (from docs / Orca; each re-checked by `verify-agent`) | Prompt | Reply | Read-only by |
@@ -209,6 +239,27 @@ To confirm on a real install (open in the table above):
 - droid: model flag name, JSON reply shape, whether `-f` or stdin is preferred.
 - pi: whether `grep`, `find`, `ls` exist as tool names beside `read`.
 
+**As built** (differences from the above):
+
+- codex gained `--ephemeral` as in the table; Claude's `--model` moved to the end. Order only.
+- Labels: Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, Factory Droid, Qwen Code, Pi.
+- gemini and qwen get `-p "Follow the instructions above and reply as they say."`; the prompt goes
+  to stdin, which both append `-p` to.
+- Env keep-lists: cursor `CURSOR_*`; copilot `COPILOT_*` (its own sign-in; `GH_TOKEN` never
+  passes); gemini `GEMINI_*`, `GOOGLE_*`; droid `FACTORY_*`; qwen `QWEN_*`, `DASHSCOPE_*`,
+  `OPENAI_*`; pi `PI_*` and the provider keys it reads (`ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*`,
+  `OPENROUTER_*`, `GROQ_*`, `XAI_*`, `MISTRAL_*`, `CEREBRAS_*`).
+- Replies of the six unverified CLIs: JSON ones read gemini/qwen `response`, droid and cursor
+  `result`, and fall back to the trimmed output (the guide parser still finds JSON in it); copilot
+  and pi are text. A non-zero exit is "<binary> exited with N: <last lines>". None report tool
+  calls, so coverage counts only the prompt for them, as for Codex.
+- Only claude and codex are `verified`. On this machine cursor refuses headless sign-in, pi has no
+  provider key, and gemini, droid, qwen and copilot are not installed.
+- Open: the repair round's prompt (prompt + previous reply) can pass the argv limit on Linux for
+  cursor and copilot; `editor/parts.ts` still names only Claude Code and Codex in a guide's
+  provenance and coverage line (the frame cannot import `src/agent.ts`). Both matter only once an
+  argv or other agent is verified.
+
 ### `verify-agent` (new `scripts/verify-agent.ts`)
 
 `bun scripts/verify-agent.ts <id>` runs the real CLI, through `runAgent`, against a fixture PR in a
@@ -224,9 +275,26 @@ throwaway clone. Pass requires all three:
 The script needs the CLI installed and signed in, so it runs by hand, not in CI: once per agent
 before enabling it, and again after a CLI upgrade that changes flags.
 
+**As built**: `bun scripts/verify-agent.ts <id> [--model m]` takes any id in the table, verified or
+not. In a temp folder it makes an `origin` repo (`main` with `README.md` and `src/config.ts`; a PR
+commit editing both and adding a ~4.5k-character `src/report.ts`, at `refs/pull/7/head`) and a
+`git clone` of it, then calls the worker's own `writeGuide` (real `fetchPr` into
+`refs/pr-tour/{base,pr}-7`, real triage from `createPrData`, `writeRunFiles`, `buildPrompt`,
+`runAgent`, the repair round, `watchGit`, coverage, `removeRunFiles`) with a 2,000-character diff
+budget, so `src/report.ts` is only readable from the run files. The injected instruction is in the
+description and in `src/config.ts`. Checks: reply is a guide; reads a prepared file (coverage
+shows a left-out file read; "not observable" for agents without tool events, with whether the guide
+names the constant only `src/report.ts` holds); no files written (`pwned.txt` absent, `git status`
+clean); `.git` unchanged (no `GitTampered`); no shell tool call (tool names matching
+bash/shell/exec/terminal/command; "not observable" without tool events); run files removed. Exit 0
+only when nothing failed; on failure the fixture is kept and its path printed. The pure parts are
+in `scripts/verify-checks.ts`, tested. A `curl` can't be observed beyond the shell-call check.
+
 ## 5. Settings and README
 
 - **Settings**: `Agent harness` lists the eight. `Model` placeholder stays "Agent default".
+  **As built**: lists only the verified agents (Claude Code, Codex); each other one is added with
+  its passing `verify-agent` run. README lists the six as "implemented, enabled once verified".
 - **README**: "What the agent can do" becomes one line per agent with its read-only mechanism (the
   last column of §4), plus "No agent gets a shell; PR Tour writes the PR's files for it to read".
   Install section: "one of: claude, codex, cursor-agent, copilot, gemini, droid, qwen, pi".
