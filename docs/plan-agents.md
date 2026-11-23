@@ -445,3 +445,13 @@ refresh 22 and a quick restart 42 again, up to 6 at once. Now:
   does not ask them again.
 - **3 at once**: every `gh` call in `src/github.ts` waits for one of `GH_AT_ONCE` (3) slots, and the
   check's lane searches, details and GraphQL queries run through `mapLimit` with the same limit.
+
+## 11. Stopping the worker stops the agent
+
+Verified in Orca before the fix: `orca plugin restart` during a run left `claude -p` running with
+parent PID 1 until it finished, spending tokens on a guide nothing would store. Orca stops a worker
+by sending `shutdown` (the module's `deactivate()`), then SIGKILL after 2 s. Now `deactivate()`
+aborts one worker-wide `AbortController` whose signal reaches the PR fetch and both agent rounds
+(`src/exec.ts` kills the child with SIGTERM on abort); queued runs are dropped and a stopped run is
+logged, not recorded as a failure. A worker that dies without `deactivate()` (a crash, a SIGKILL)
+can still leave an agent running; the next run of that PR starts fresh.

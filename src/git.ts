@@ -49,6 +49,7 @@ export async function fetchPr(
   clone: Clone,
   repo: string,
   pr: { number: number; baseRefName: string },
+  signal?: AbortSignal,
 ): Promise<PrRefs> {
   const refs = prRefs(pr.number);
   const host = githubHost((await originUrl(clone.path)) ?? "");
@@ -68,7 +69,7 @@ export async function fetchPr(
       `+refs/pull/${pr.number}/head:${refs.head}`,
       `+refs/heads/${pr.baseRefName}:${refs.base}`,
     ],
-    { timeoutMs: 180_000 },
+    { timeoutMs: 180_000, signal },
   );
   return refs;
 }

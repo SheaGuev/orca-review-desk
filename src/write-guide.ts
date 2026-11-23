@@ -59,6 +59,8 @@ export type GuideRequest = {
   lastViewedCommit: () => Promise<string | undefined>;
   triage: (at: PrPlace, commit: string, baseRef: string) => Promise<Triage>;
   log: (text: string) => void;
+  /** Stops the git fetch and the agent when aborted (the worker stopping). */
+  signal?: AbortSignal;
   /** Characters of diff the prompt may carry, in place of the agent's own; for `verify-agent`. */
   diffBudget?: number;
   /** Told each agent reply, both rounds; for `verify-agent`, which checks the tools called. */
@@ -139,7 +141,7 @@ async function askAgent(
   ctx: DiffContext,
 ): Promise<{ guide: AgentGuide; toolCalls: ToolCall[] }> {
   const { harness, model } = req.settings;
-  const first = await runAgent(harness, model, prompt, req.clone.path);
+  const first = await runAgent(harness, model, prompt, req.clone.path, req.signal);
   req.onReply?.(first);
   const firstRead = readReply(first.text, ctx);
   if (firstRead.ok) return { guide: firstRead.guide, toolCalls: first.toolCalls };
@@ -151,6 +153,7 @@ async function askAgent(
     model,
     buildRepairPrompt(prompt, first.text, firstRead.problems, AGENTS[harness].maxPromptChars),
     req.clone.path,
+    req.signal,
   );
   req.onReply?.(second);
   const loose = parseAgentGuide(extractJson(second.text), undefined, { words: false, tour: false });
@@ -247,7 +250,7 @@ function refuseSecrets(guide: PrGuide, known: string): void {
 /** Fetches the PR, runs the agent and returns the finished guide; throws when the run fails. */
 export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
   const { clone, pr } = req;
-  const refs = await fetchPr(clone, req.repo, pr);
+  const refs = await fetchPr(clone, req.repo, pr, req.signal);
   try {
     return await runWithFiles(req, refs);
   } finally {

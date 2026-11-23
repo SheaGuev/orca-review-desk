@@ -27,6 +27,8 @@ type Deps = {
   tours: TourProgress;
   log: (text: string) => void;
   publish: () => void;
+  /** Aborted when the worker stops: the run's agent and git fetch stop, and nothing is recorded. */
+  signal: AbortSignal;
   /** Told once the guide is stored, before the person is notified (a command's guide opens here). */
   onWritten: (key: string) => Promise<void>;
   notify: (title: string, body: string) => Promise<void>;
@@ -65,6 +67,7 @@ async function write(deps: Deps, key: string): Promise<{ guide: PrGuide; head: s
     lastViewedCommit: async () => (await store.meta(key)).lastViewedCommit,
     triage: deps.prData.triage,
     log: deps.log,
+    signal: deps.signal,
   });
   return { guide, head: details.headRefOid };
 }
@@ -149,7 +152,9 @@ export function createGuideRun(deps: Deps): (key: string, automatic: boolean) =>
     try {
       await finish(deps, key, await write(deps, key), automatic);
     } catch (e) {
-      await fail(deps, key, e, headBefore);
+      // The worker is going away: a stopped run is no failure, and storage may be gone already.
+      if (deps.signal.aborted) deps.log(`${key}: stopped with the worker`);
+      else await fail(deps, key, e, headBefore);
     } finally {
       deps.publish();
     }

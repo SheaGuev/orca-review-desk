@@ -45,10 +45,13 @@ const RATE_LIMIT_BACKOFF_MS = [5, 10, 20, 40, 60].map((m) => m * 60_000);
 const KEEP_GUIDES_MS = 14 * 24 * 60 * 60_000;
 
 let stopTimers: () => void = () => undefined;
+/** Aborted when Orca stops the worker, which stops a running agent and git fetch with it. */
+let stopping = new AbortController();
 
-/** Clears the poll and settle timers before Orca stops the worker. */
+/** Clears the timers and stops any agent run before Orca stops the worker. */
 export function deactivate(): void {
   stopTimers();
+  stopping.abort();
 }
 
 /** The parts every action below needs. */
@@ -259,7 +262,13 @@ async function beforeFirstCheck(
   p.publish();
 }
 
+/** An Orca notification; one Orca cannot show is dropped. */
+async function notify(orca: OrcaWorkerApi, title: string, body: string): Promise<void> {
+  await orca.host.call("notifications.show", { title, body }).catch(() => undefined);
+}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
+  stopping = new AbortController();
   const { parts, prData, tours, settingsNow } = await createParts(orca);
   const { state, store, clones, focus, opener, log, publish } = parts;
   /** Guides started from a command open themselves when they are written. */
@@ -276,10 +285,9 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     tours,
     log,
     publish,
+    signal: stopping.signal,
     onWritten: (key) => openIfAsked(parts, openWhenReady, key),
-    notify: async (title, body) => {
-      await orca.host.call("notifications.show", { title, body }).catch(() => undefined);
-    },
+    notify: (title, body) => notify(orca, title, body),
   });
   const runs: RunQueue = createRunQueue({ state, generate, publish, refresh: autoRefresh });
   const reviews = reviewsFor(parts, refresh);

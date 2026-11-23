@@ -10,7 +10,7 @@ export type RunQueue = {
   enqueue: (key: string, automatic: boolean) => void;
   /** Queues an automatic run for every tracked PR that is due one. */
   scheduleAutomatic: () => void;
-  /** Clears the settle timers. */
+  /** Clears the settle timers and the runs waiting, for the worker stopping. */
   stop: () => void;
 };
 
@@ -104,6 +104,7 @@ export function createRunQueue(deps: Deps): RunQueue {
     stop: () => {
       for (const timer of q.timers) clearTimeout(timer);
       q.timers.clear();
+      q.deps.state.queued.length = 0;
     },
   };
 }

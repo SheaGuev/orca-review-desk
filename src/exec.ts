@@ -31,8 +31,13 @@ function userName(): string | undefined {
   }
 }
 
+const stopped = (cmd: string): Error =>
+  Object.assign(new Error(`${cmd} was stopped`), { code: "cancelled" });
+
 const defaultRunner: Runner = (cmd, args, options = {}) =>
   new Promise((resolve, reject) => {
+    // An already-aborted signal never fires "abort", so nothing is spawned for it.
+    if (options.signal?.aborted) return reject(stopped(cmd));
     const user = userName();
     const child = spawn(cmd, args, {
       cwd: options.cwd,
@@ -57,7 +62,7 @@ const defaultRunner: Runner = (cmd, args, options = {}) =>
     };
     const onAbort = () => {
       child.kill("SIGTERM");
-      finish(() => reject(Object.assign(new Error(`${cmd} was stopped`), { code: "cancelled" })));
+      finish(() => reject(stopped(cmd)));
     };
     const timer = setTimeout(() => {
       child.kill("SIGTERM");

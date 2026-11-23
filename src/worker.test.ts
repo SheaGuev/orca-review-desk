@@ -881,6 +881,26 @@ test("at most 3 GitHub calls are in flight at once", async () => {
   assert.ok(inFlight.max <= 3, `${inFlight.max} at once`);
 });
 
+test("stopping the worker stops a running agent, so it never runs on unattended", async () => {
+  let release: () => void = () => undefined;
+  const agentGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const { worker, calls, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    { agentGate },
+  );
+  await until(() => calls.some((c) => c.cmd === "claude"), "the agent to start");
+  await until(() => all()[0]?.status === "generating", "the run");
+  const agent = calls.find((c) => c.cmd === "claude");
+  assert.equal(agent?.options?.signal?.aborted ?? false, false, "running until the worker stops");
+  await worker.deactivate();
+  assert.equal(agent?.options?.signal?.aborted, true, "Orca stopping the worker stops the agent");
+  release();
+});
+
 test("an agent with no sign-in shows as the notice", async () => {
   const { latest, all } = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
   await until(() => all()[0]?.status === "failed", "the failed run");
