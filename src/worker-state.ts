@@ -1,6 +1,7 @@
 // What the worker knows between requests: the PRs it follows, the runs under way, and the facts
 // the panel's one notice line is made from. One object, so each part of the worker says which of
 // it it reads and changes.
+import type { AgentId } from "./agent-names";
 import type { Notice, QueueItem, QueueState, RepoState } from "./protocol";
 import { buildQueue } from "./queue";
 import type { RunState, Tracked } from "./queue-items";
@@ -28,10 +29,16 @@ export type WorkerState = {
    * row. Null once a check works.
    */
   rateLimit: { resumeAt: number; fromGitHub: boolean; strikes: number } | null;
-  /** The last agent run failed for want of a sign-in; cleared by the next run that works. */
-  agentSignedOut: boolean;
-  /** The label of the agent whose CLI the last run could not find; cleared by the next run that works. */
-  agentMissing: string | null;
+  /**
+   * The agent the last run found signed out; cleared by the next run that works, and shown only
+   * while it is still the chosen agent.
+   */
+  agentSignedOut: AgentId | null;
+  /**
+   * The agent whose CLI the last run could not find; cleared by the next run that works, and
+   * shown only while it is still the chosen agent.
+   */
+  agentMissing: AgentId | null;
   /** QueueState.openKey: the guide last opened or moved through. */
   openKey: string | null;
   /** The last run that changed its clone's git config or hooks; cleared when its repo is turned on. */
@@ -49,7 +56,7 @@ export const createWorkerState = (settings: Settings, runsToday: number): Worker
   checkedAt: null,
   lastError: null,
   rateLimit: null,
-  agentSignedOut: false,
+  agentSignedOut: null,
   agentMissing: null,
   openKey: null,
   tampered: null,
@@ -110,12 +117,12 @@ function notice(state: WorkerState, items: readonly QueueItem[]): Notice | null 
       text: `${what}${checkedAt === null ? "" : ` · last checked ${clock(checkedAt)}`}`,
     };
   }
-  if (state.agentMissing)
+  if (state.agentMissing === settings.harness)
     return {
       tone: "danger",
-      text: `${state.agentMissing} isn't installed · install it, then Generate`,
+      text: `${harnessName(settings.harness)} isn't installed · install it, then Generate`,
     };
-  if (state.agentSignedOut)
+  if (state.agentSignedOut === settings.harness)
     return {
       tone: "danger",
       text: `${harnessName(settings.harness)} is not signed in · sign in from a terminal, then Generate`,

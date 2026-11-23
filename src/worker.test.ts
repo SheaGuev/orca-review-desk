@@ -901,6 +901,24 @@ test("stopping the worker stops a running agent, so it never runs on unattended"
   release();
 });
 
+test("the not-installed notice goes once another agent is chosen", async () => {
+  // Automatic guides off, so nothing runs on its own: only switching agents can clear it.
+  const { worker, host, latest, all } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    installed: (cmd) => cmd !== "claude",
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  await worker.request("guide.generate", { key: "acme/api#7" });
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.equal(latest()?.notice?.text, "Claude Code isn't installed · install it, then Generate");
+  host.respond("settings.get", { settings: { ...SETTINGS, harness: "codex" } });
+  await worker.request("queue.refresh");
+  assert.equal(
+    latest()?.notice,
+    null,
+    "no notice: the check worked and the chosen agent is installed",
+  );
+});
+
 test("an agent with no sign-in shows as the notice", async () => {
   const { latest, all } = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
   await until(() => all()[0]?.status === "failed", "the failed run");

@@ -119,7 +119,7 @@ test("Since your last review is one line, with the changed files behind Show cha
     );
 
     // Collapsed by default; Show changes opens the per-file list, Hide changes closes it.
-    assert.equal(line()?.querySelectorAll(".file-rows li").length, 0, "no file rows until asked");
+    assert.equal(line()?.querySelectorAll("li").length, 0, "no file rows until asked");
     assert.equal(toggle()?.textContent?.trim(), "Show changes");
     assert.equal(toggle()?.getAttribute("aria-expanded"), "false");
     const diffsBefore = asked.filter((n) => n === "diff.get").length;

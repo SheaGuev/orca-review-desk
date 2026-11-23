@@ -5,6 +5,7 @@ import {
   AgentMissing,
   REPAIR_REPLY_CHARS,
   agentCommand,
+  argvPromptBytes,
   diffBudget,
   runAgent,
 } from "./agent";
@@ -286,6 +287,11 @@ const ARGV: Record<AgentId, { cmd: string; args: (model: string[]) => string[]; 
       STDIN_HINT,
       "--approval-mode",
       "plan",
+      // No extensions and no MCP server, whatever the clone's .gemini/settings.json names.
+      "-e",
+      "none",
+      "--allowed-mcp-server-names",
+      "",
       "--output-format",
       "json",
       ...(m.length ? ["-m", ...m] : []),
@@ -311,6 +317,8 @@ const ARGV: Record<AgentId, { cmd: string; args: (model: string[]) => string[]; 
       STDIN_HINT,
       "--approval-mode",
       "plan",
+      // The clone's MCP servers, hooks, context files, extensions and skills stay off.
+      "--safe-mode",
       "-o",
       "json",
       ...(m.length ? ["-m", ...m] : []),
@@ -481,4 +489,29 @@ test("the repair prompt fits a limit by cutting the previous reply, never the in
   assert.ok(repair.endsWith("Keep everything that was right."));
   // Without a limit, nothing changes.
   assert.ok(buildRepairPrompt(original, reply, []).includes("r".repeat(120_000)));
+});
+
+test("an argv prompt fits the platform's command line, counted in bytes", async () => {
+  // Windows takes about 32K characters on a whole command line; Linux 128 KiB per argument.
+  assert.ok(argvPromptBytes("win32") <= 30_000, `win32: ${argvPromptBytes("win32")}`);
+  assert.ok(
+    argvPromptBytes("linux") <= 128 * 1024 - 8 * 1024,
+    `linux: ${argvPromptBytes("linux")}`,
+  );
+  assert.ok(argvPromptBytes("darwin") <= argvPromptBytes("linux"));
+  // Within the character count but over in bytes: two-byte characters still don't fit.
+  const calls: string[] = [];
+  setRunner(
+    async (cmd) => {
+      calls.push(cmd);
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+    () => true,
+  );
+  const limit = argvPromptBytes(process.platform);
+  await assert.rejects(
+    runAgent("cursor", "", "é".repeat(Math.ceil(limit / 2) + 1), "/repo"),
+    /too long for Cursor's command line/,
+  );
+  assert.deepEqual(calls, []);
 });

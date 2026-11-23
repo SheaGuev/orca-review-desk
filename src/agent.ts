@@ -29,8 +29,9 @@ export type AgentSpec = AgentNames & {
   /** "argv": the prompt is in the command line (`args` places it); else it goes to stdin. */
   promptDelivery: "stdin" | "argv";
   /**
-   * argv agents: Linux allows 128 KB per argument, so the diff budget shrinks to fit and a longer
-   * prompt is refused before the CLI runs.
+   * argv agents: the most bytes the prompt may take on this platform's command line
+   * (`argvPromptBytes`), so the diff budget shrinks to fit and a longer prompt is refused before
+   * the CLI runs.
    */
   maxPromptChars?: number;
   /** Headless, read-only tools only. */
@@ -54,10 +55,13 @@ const CLAUDE_TOOLS = "Read,Grep,Glob";
 /** gemini and qwen append `-p` to what stdin holds, so the prompt itself goes to stdin. */
 const STDIN_HINT = "Follow the instructions above and reply as they say.";
 /**
- * argv agents: Linux's 128 KiB (131,072 bytes) per argument, less room for multi-byte characters
- * in the PR's text, since this counts characters.
+ * The most UTF-8 bytes an argv agent's prompt may take: Windows allows about 32K characters on the
+ * whole command line, other args included; Linux 128 KiB per argument (macOS allows more), less
+ * room for the rest of the command.
  */
-const ARGV_PROMPT_CHARS = 100_000;
+export const argvPromptBytes = (platform: NodeJS.Platform): number =>
+  platform === "win32" ? 30_000 : 100_000;
+const ARGV_PROMPT_BYTES = argvPromptBytes(process.platform);
 /**
  * Room an argv agent's diff budget keeps for the repair round, which repeats the prompt and adds
  * the previous reply (cut to fit by `buildRepairPrompt`).
@@ -203,8 +207,9 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     binary: "cursor-agent",
     verified: false,
     promptDelivery: "argv",
-    maxPromptChars: ARGV_PROMPT_CHARS,
-    // `--mode ask` is read-only Q&A; MCP servers need `--approve-mcps`, never passed.
+    maxPromptChars: ARGV_PROMPT_BYTES,
+    // `--mode ask` is read-only Q&A; MCP servers need `--approve-mcps`, never passed. No flag
+    // skips the clone's `.cursor/rules`, AGENTS.md and CLAUDE.md: those always load.
     args: ({ model, prompt }) => [
       "--print",
       "--mode",
@@ -223,7 +228,7 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     binary: "copilot",
     verified: false,
     promptDelivery: "argv",
-    maxPromptChars: ARGV_PROMPT_CHARS,
+    maxPromptChars: ARGV_PROMPT_BYTES,
     args: ({ model, prompt }) => [
       "--prompt",
       prompt,
@@ -251,6 +256,11 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       STDIN_HINT,
       "--approval-mode",
       "plan",
+      // No extensions and no MCP servers; the clone's GEMINI.md and workspace settings still load.
+      "-e",
+      "none",
+      "--allowed-mcp-server-names",
+      "",
       "--output-format",
       "json",
       ...withModel("-m", model),
@@ -285,6 +295,8 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
       STDIN_HINT,
       "--approval-mode",
       "plan",
+      // The clone's MCP servers, hooks, context files, extensions and skills stay off.
+      "--safe-mode",
       "-o",
       "json",
       ...withModel("-m", model),
@@ -353,7 +365,8 @@ export function agentEnv(id: AgentId): Record<string, string> {
 /**
  * Characters of diff the prompt may carry for this agent, given the rest of the prompt
  * (`overhead`): argv agents fit the whole prompt in one argument, with room left for the repair
- * round's previous reply.
+ * round's previous reply. The byte limit serves as the character budget: a character is at least
+ * one byte, and a prompt that is still over in bytes is refused before the CLI runs.
  */
 export function diffBudget(id: AgentId, overhead: number): number {
   const max = AGENTS[id].maxPromptChars;
@@ -382,9 +395,10 @@ export async function runAgent(
 ): Promise<AgentReply> {
   const spec = AGENTS[id];
   const max = spec.maxPromptChars;
-  if (spec.promptDelivery === "argv" && max !== undefined && prompt.length > max)
+  const bytes = Buffer.byteLength(prompt, "utf8");
+  if (spec.promptDelivery === "argv" && max !== undefined && bytes > max)
     throw new Error(
-      `The prompt is too long for ${spec.label}'s command line (${prompt.length.toLocaleString("en-US")} characters, at most ${max.toLocaleString("en-US")})`,
+      `The prompt is too long for ${spec.label}'s command line (${bytes.toLocaleString("en-US")} bytes, at most ${max.toLocaleString("en-US")})`,
     );
   if (!(await isInstalled(spec.binary))) throw new AgentMissing(spec.label, spec.binary);
   const dir = await mkdtemp(join(tmpdir(), "pr-tour-"));

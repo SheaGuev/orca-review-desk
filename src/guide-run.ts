@@ -1,6 +1,7 @@
 // One run from the queue: has the agent write the guide for a PR, stores it, and brings the
 // queue row up to date. A failure is recorded on the row, never thrown.
 import { AgentMissing } from "./agent";
+import type { AgentId } from "./agent-names";
 import type { Clones } from "./clones";
 import { message } from "./errors";
 import { GitTampered } from "./git-guard";
@@ -82,7 +83,7 @@ async function finish(
   const { state, store, log } = deps;
   const { guide } = written;
   const stored = await keep(store, key, guide);
-  state.agentSignedOut = false;
+  state.agentSignedOut = null;
   state.agentMissing = null;
   // Ready before the tab asks; a failure here is retried when the tab asks.
   void deps.prData
@@ -133,12 +134,21 @@ async function stopAutomatic(deps: Deps, key: string, paths: readonly string[]):
   }
 }
 
-/** Records a failed run on the PR's row and in storage, against the head it was started for. */
-async function fail(deps: Deps, key: string, e: unknown, head: string | undefined): Promise<void> {
+/**
+ * Records a failed run on the PR's row and in storage, against the head it was started for;
+ * `harness` is the agent the run used.
+ */
+async function fail(
+  deps: Deps,
+  key: string,
+  e: unknown,
+  head: string | undefined,
+  harness: AgentId,
+): Promise<void> {
   const { state, store } = deps;
   const error = message(e);
-  if (SIGNED_OUT.test(error)) state.agentSignedOut = true;
-  if (e instanceof AgentMissing) state.agentMissing = e.label;
+  if (SIGNED_OUT.test(error)) state.agentSignedOut = harness;
+  if (e instanceof AgentMissing) state.agentMissing = harness;
   deps.log(`${key}: ${error}`);
   if (e instanceof GitTampered) await stopAutomatic(deps, key, e.paths);
   const meta = await store.meta(key);
@@ -149,12 +159,13 @@ async function fail(deps: Deps, key: string, e: unknown, head: string | undefine
 export function createGuideRun(deps: Deps): (key: string, automatic: boolean) => Promise<void> {
   return async function generate(key, automatic) {
     const headBefore = deps.state.tracked.get(key)?.item.headSha;
+    const harness = deps.state.settings.harness;
     try {
       await finish(deps, key, await write(deps, key), automatic);
     } catch (e) {
       // The worker is going away: a stopped run is no failure, and storage may be gone already.
       if (deps.signal.aborted) deps.log(`${key}: stopped with the worker`);
-      else await fail(deps, key, e, headBefore);
+      else await fail(deps, key, e, headBefore, harness);
     } finally {
       deps.publish();
     }

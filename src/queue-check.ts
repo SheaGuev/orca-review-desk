@@ -126,6 +126,7 @@ async function check(deps: Deps, asked: Asked): Promise<void> {
   // PRs no longer found are read afresh if they come back.
   const listed = new Set(fetched.map((f) => f.key));
   for (const key of asked.details.keys()) if (!listed.has(key)) asked.details.delete(key);
+  for (const key of asked.associations.keys()) if (!listed.has(key)) asked.associations.delete(key);
   const { requested } = asked;
   await askRequestTimes(deps, requested, fetched);
   // One at a time: a guide stored without its skipped files asks git, which may fetch.

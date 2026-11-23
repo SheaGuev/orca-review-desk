@@ -107,22 +107,26 @@ In Settings → Plugins → PR Tour:
 
 ## What the agent can do
 
-The agent runs in the background with read-only tools. No agent gets a shell: PR Tour writes the
-PR's files for it to read.
+The agent runs in the background with read-only tools. Codex runs commands, but only inside its own
+read-only OS sandbox; the others get file tools and no shell. PR Tour writes the PR's files for the
+agent to read.
 
 - Claude Code: `claude -p` with only `Read`, `Grep` and `Glob`, no MCP servers, no project settings
   or hooks, and no saved session.
 - Codex: `codex exec --sandbox read-only`, its own OS sandbox.
-- Cursor: `cursor-agent --print --mode ask`, its read-only mode; MCP servers stay off.
+- Cursor: `cursor-agent --print --mode ask`, its read-only mode; MCP servers stay off. The clone's
+  `.cursor/rules`, `AGENTS.md` and `CLAUDE.md` still load: no flag turns them off.
 - GitHub Copilot: `copilot --prompt` with only `view`, `glob` and `grep`; writes, shell, memory and
   built-in MCP servers are denied.
-- Gemini CLI: `gemini --approval-mode plan`, its read-only mode.
+- Gemini CLI: `gemini --approval-mode plan -e none --allowed-mcp-server-names ""`, its read-only
+  mode with no extensions or MCP servers. The clone's `GEMINI.md` and workspace settings still load.
 - Factory Droid: `droid exec --only-tools Read,Grep,Glob,LS`.
-- Qwen Code: `qwen --approval-mode plan`, its read-only mode.
+- Qwen Code: `qwen --approval-mode plan --safe-mode`, its read-only mode with the clone's MCP
+  servers, hooks, context files, extensions and skills off.
 - Pi: `pi --print --tools read`, with no extensions, skills, context files or saved session.
 
 Cursor and GitHub Copilot take the prompt on the command line, so their prompts carry less diff
-(one argument holds about 100k characters); the rest is read from files.
+(the prompt may take about 100,000 bytes, 30,000 on Windows); the rest is read from files.
 
 The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. It is
 fetched over HTTPS from the PR's repository with `gh`'s credentials, not through your `origin`
