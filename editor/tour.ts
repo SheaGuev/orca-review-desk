@@ -5,6 +5,8 @@
 // this file only draws.
 import type { Breakdown } from "../src/breakdown/assemble";
 import type { DiffFile } from "../src/diff-model";
+import { message } from "../src/errors";
+import type { ImportTarget } from "../src/import-resolve";
 import {
   severityCounts,
   splitFindings,
@@ -98,6 +100,8 @@ export type TourContext = {
   /** The PR's files by kind, for the overview's Changes; asked once per tab, again after a failure. */
   breakdown: () => Promise<Breakdown>;
   openInOrca: (path: string) => void;
+  /** Where an import in `from` points at the guide's commit, worked out by the worker from git. */
+  resolveImport: (from: string, specifier: string) => Promise<ImportTarget>;
   regenerate: (label: string) => HTMLElement;
   /** The tab's status line for errors (Regenerate, Open in Orca). */
   notice: HTMLElement;
@@ -140,6 +144,7 @@ function fileRow(
     viewed: ctx.viewed,
     review: ctx.review,
     openInOrca: ctx.openInOrca,
+    openImport: (from, specifier) => void openImport(ctx, from, specifier),
     variant: "listed",
     expanded: target,
     lead,
@@ -998,6 +1003,39 @@ const lineCounts = (ctx: TourContext): Promise<LineCounts> =>
     })
     .catch(() => new Map());
 
+/** Shows changed file `path` in stop `i`: its card on this page, else that stop opened at it. */
+function showFile(ctx: TourContext, i: number, path: string): void {
+  if (!scrollToCard(path)) ctx.go(stopView(i), "file", { file: path, line: null });
+}
+
+/**
+ * Opens what an import points to: a changed file goes to its card in the tour; any other file
+ * opens in Orca (at the top: Orca opens files without a line); a package or a miss says why.
+ */
+async function openImport(ctx: TourContext, from: string, specifier: string): Promise<void> {
+  const say = (text: string) => (ctx.notice.textContent = text);
+  const target = await ctx.resolveImport(from, specifier).catch((e: unknown) => {
+    say(`Couldn’t open ${specifier}: ${message(e)}`);
+    return null;
+  });
+  if (!target) return;
+  if ("reason" in target) {
+    say(
+      target.reason === "external"
+        ? `${specifier} is a package from node_modules, not a file in this repository.`
+        : `Couldn’t find ${specifier} at this commit (tsconfig paths aren’t followed).`,
+    );
+    return;
+  }
+  const at = stopForFile(ctx.lookup, target.path);
+  if (at !== null) {
+    showFile(ctx, at, target.path);
+    return;
+  }
+  say(`Opened ${target.path} in Orca, at the top of the file, as it is checked out there.`);
+  ctx.openInOrca(target.path);
+}
+
 /** Scrolls to `path`'s card on this page, opening it; false when the page has none. */
 function scrollToCard(path: string): boolean {
   const card = Array.from(document.querySelectorAll<HTMLElement>(".group-file")).find(
@@ -1035,9 +1073,7 @@ function railFor(ctx: TourContext, here: Here): HTMLElement {
     pending: () => pendingByStop(ctx.lookup, ctx.review?.all() ?? []),
     onPendingChange: (listener) => ctx.review?.onChange(listener) ?? (() => undefined),
     goGroup: (i) => ctx.go(stopView(i)),
-    goFile: (i, path) => {
-      if (i !== at || !scrollToCard(path)) ctx.go(stopView(i), "file", { file: path, line: null });
-    },
+    goFile: (i, path) => showFile(ctx, i, path),
     goOverview: () => ctx.go("overview"),
     goWrapUp: () => ctx.go("wrapup"),
     track: ctx.track,
@@ -1085,6 +1121,7 @@ function fileCard(ctx: TourContext, c: Card): HTMLElement {
     viewed: ctx.viewed,
     review: ctx.review,
     openInOrca: ctx.openInOrca,
+    openImport: (from, specifier) => void openImport(ctx, from, specifier),
     marks: primary ? (c.focus ?? null) : null,
     expanded: open && eager,
     onToggle: primary ? (o) => ctx.setCollapsed(c.index, !o) : undefined,

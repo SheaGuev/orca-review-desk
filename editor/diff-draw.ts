@@ -17,6 +17,7 @@ import {
 } from "./diff-rows";
 import { h, splitPath } from "./dom";
 import type { RowTokens } from "./highlight";
+import { linksImports } from "./imports";
 import { plural } from "./parts";
 import { cardOf, type Review } from "./review";
 
@@ -39,6 +40,8 @@ export type View = {
   readonly review: Review | null;
   /** A tour stop's ranges, or null for a whole file. */
   readonly focus: readonly LineRange[] | null;
+  /** Whether import specifiers in the rows are drawn as links (the view has somewhere to open them). */
+  readonly linkImports: boolean;
   /** Lines to mark (a group's focus) while every hunk stays shown. */
   readonly marks: readonly LineRange[] | null;
   readonly frame: DiffFrame;
@@ -86,6 +89,7 @@ export function drawBody(v: View): void {
     v.tokens,
     // Whether GitHub takes a comment on that PR-head line of the file shown.
     (line) => v.review !== null && v.current !== null && v.review.canComment(v.current, line),
+    v.linkImports && v.current !== null && linksImports(v.current),
   );
   v.rowEl = drawn.rowEl;
   for (const [line, row] of drawn.rowEl)

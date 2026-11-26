@@ -13,6 +13,7 @@ import type { DraftComment } from "../src/review";
 import type { Finding } from "../src/schema";
 import { h, prose } from "./dom";
 import type { RowTokens, Tok } from "./highlight";
+import { importSpans, type ImportSpan } from "./imports";
 import { paragraphs, plural, SEVERITY_LABEL } from "./parts";
 import type { Review } from "./review";
 
@@ -70,19 +71,32 @@ function tokNode(text: string, tok: Tok | undefined): string | HTMLElement {
   return el;
 }
 
+/** A piece of an import's specifier: a quiet link the diff view's click handler opens. */
+const importLink = (piece: string | HTMLElement, link: ImportSpan): HTMLElement =>
+  h(
+    "span",
+    { class: "imp", "data-import": link.specifier, title: `Open ${link.specifier}` },
+    piece,
+  );
+
+/** What a row's text is drawn with: colour runs, changed words and import specifiers. */
+type Overlays = {
+  marks?: readonly Span[];
+  toks?: readonly Tok[];
+  links?: readonly ImportSpan[];
+};
+
 /**
- * A line's text in its syntax colours, with its changed words wrapped so they stand out (still
- * text nodes only). The text is cut wherever a colour run or a changed word starts or ends.
+ * A line's text in its syntax colours, with its changed words wrapped so they stand out and its
+ * import specifiers as links (still text nodes only). The text is cut wherever any of them starts
+ * or ends.
  */
-function codeText(
-  text: string,
-  marks: readonly Span[] | undefined,
-  toks: readonly Tok[] | undefined,
-): (string | HTMLElement)[] {
-  if (!marks?.length && !toks?.length) return [text];
+function codeText(text: string, { marks, toks, links }: Overlays): (string | HTMLElement)[] {
+  if (!marks?.length && !toks?.length && !links?.length) return [text];
   const cuts = new Set([0, text.length]);
   for (const [start, end] of marks ?? []) cuts.add(start).add(end);
   for (const t of toks ?? []) cuts.add(t.start).add(t.end);
+  for (const l of links ?? []) cuts.add(l.start).add(l.end);
   const at = [...cuts].filter((c) => c <= text.length).sort((a, b) => a - b);
   const parts: (string | HTMLElement)[] = [];
   for (let k = 0; k + 1 < at.length; k++) {
@@ -92,7 +106,9 @@ function codeText(
       toks?.find((t) => t.start <= from && to <= t.end),
     );
     const marked = marks?.some(([start, end]) => start <= from && to <= end);
-    parts.push(marked ? h("span", { class: "word" }, piece) : piece);
+    const inWord = marked ? h("span", { class: "word" }, piece) : piece;
+    const link = links?.find((l) => l.start <= from && to <= l.end);
+    parts.push(link ? importLink(inWord, link) : inWord);
   }
   return parts;
 }
@@ -104,8 +120,7 @@ function codeText(
 export function rowNode(
   r: DiffRow,
   canComment: (line: number) => boolean,
-  marks?: readonly Span[],
-  toks?: readonly Tok[],
+  overlays: Overlays = {},
 ): HTMLElement {
   if (r.kind === "hunk")
     return h(
@@ -132,7 +147,7 @@ export function rowNode(
       r.new !== null && canComment(r.new) ? plusButton(r.new) : h("span", { class: "plus-space" }),
       h("span", { class: "sign" }, SIGN[r.kind]),
     ),
-    h("span", { class: "code" }, ...codeText(r.text, marks, toks)),
+    h("span", { class: "code" }, ...codeText(r.text, overlays)),
   );
 }
 
@@ -277,15 +292,32 @@ function wordsOf(rows: readonly DiffRow[]): Map<number, Span[]> {
   return words;
 }
 
+/** Import specifiers per row, for a file whose imports the guide links; worked out once per rows array. */
+const importCache = new WeakMap<readonly DiffRow[], Map<number, ImportSpan[]>>();
+function importsOf(rows: readonly DiffRow[]): Map<number, ImportSpan[]> {
+  let found = importCache.get(rows);
+  if (!found) {
+    found = new Map();
+    for (const [i, r] of rows.entries()) {
+      const spans = isLineRow(r) ? importSpans(r.text) : [];
+      if (spans.length) found.set(i, spans);
+    }
+    importCache.set(rows, found);
+  }
+  return found;
+}
+
 export function renderPieces(
   pieces: readonly FocusPiece[],
   rows: readonly DiffRow[],
   tokens: RowTokens,
   canComment: (line: number) => boolean,
+  linkImports = false,
 ): { nodes: DocumentFragment; rowEl: Map<number, HTMLElement> } {
   const rowEl = new Map<number, HTMLElement>();
   const nodes = document.createDocumentFragment();
   const words = wordsOf(rows);
+  const imports = linkImports ? importsOf(rows) : null;
   for (const p of pieces) {
     const part = rows.slice(p.from, p.to);
     if (p.kind === "gap") {
@@ -293,7 +325,12 @@ export function renderPieces(
       continue;
     }
     part.forEach((r, k) => {
-      const row = rowNode(r, canComment, words.get(p.from + k), tokens.get(p.from + k));
+      const i = p.from + k;
+      const row = rowNode(r, canComment, {
+        marks: words.get(i),
+        toks: tokens.get(i),
+        links: imports?.get(i),
+      });
       if (isLineRow(r) && r.new !== null) rowEl.set(r.new, row);
       nodes.append(row);
     });

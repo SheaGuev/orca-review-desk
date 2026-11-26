@@ -29,6 +29,8 @@ export type DiffViewOptions = {
   load: (path: string) => Promise<DiffFile>;
   review: Review | null;
   openInOrca: (path: string) => void;
+  /** Opens what an import in the file shown points to; without it, imports are plain text. */
+  openImport?: (from: string, specifier: string) => void;
   /** A tour stop's ranges: the view opens on those hunks only and offers Full file. */
   focus?: readonly LineRange[] | null;
   /** Lines to mark in the gutter (a group's focus) without hiding the other hunks. */
@@ -90,6 +92,7 @@ function emptyView(opts: DiffViewOptions): View {
     lineComposer: null,
     fileComposer: null,
     focusComment: opts.focusComment ?? null,
+    linkImports: opts.openImport !== undefined,
     findingOpen: new Map(),
   };
 }
@@ -275,6 +278,20 @@ function wire(c: Shown): void {
     openFileComposer(v);
   });
   wireRows(v);
+  wireImports(c);
+}
+
+/** A press on an import specifier opens it; a drag that selected text is left as a selection. */
+function wireImports(c: Shown): void {
+  const { openImport } = c.opts;
+  if (!openImport) return;
+  c.v.frame.lines.addEventListener("click", (e) => {
+    const link = e.target instanceof Element ? e.target.closest<HTMLElement>(".imp") : null;
+    const specifier = link?.dataset.import;
+    if (!specifier || c.v.current === null) return;
+    if (window.getSelection()?.toString()) return;
+    openImport(c.v.current, specifier);
+  });
 }
 
 export function createDiffView(opts: DiffViewOptions): DiffView {

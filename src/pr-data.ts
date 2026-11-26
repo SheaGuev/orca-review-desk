@@ -27,6 +27,15 @@ import { fileDiffView, type DiffFile } from "./diff-model";
 import { fail, message } from "./errors";
 import { run, runOk } from "./exec";
 import { fetchPr, hasCommit, prRefs, type Clone } from "./git";
+import {
+  packageFiles,
+  resolveImport,
+  workspacePackage,
+  type ImportTarget,
+  type RepoIndex,
+  type WorkspacePackage,
+} from "./import-resolve";
+import { splitBatch } from "./run-files";
 import { SCHEMA_ID, type SkippedFile } from "./schema";
 import type { StoredGuide } from "./store";
 import { riskyFiles, skippedFiles } from "./triage";
@@ -57,7 +66,11 @@ type Ctx = {
   breakdowns: PromiseCache<Breakdown>;
   /** For guides written before they stored their skipped files. */
   skippedLists: PromiseCache<SkippedFile[]>;
-  /** Ecosystems whose presets apply, by `repo@commit`: one `ls-tree` of the whole repo each. */
+  /** Every file at `repo@commit`: one `ls-tree` of the whole repo each. */
+  trees: PromiseCache<string[]>;
+  /** The files and workspace packages imports resolve against, by `repo@commit`. */
+  indexes: PromiseCache<RepoIndex>;
+  /** Ecosystems whose presets apply, by `repo@commit`. */
   ecosystems: PromiseCache<Ecosystem[]>;
 };
 
@@ -68,12 +81,48 @@ const nameStatus = (c: Ctx, cwd: string, range: string, cacheKey: string): Promi
     }).then(parseNameStatusZ),
   );
 
-const ecosystemsAt = (c: Ctx, cwd: string, repo: string, commit: string): Promise<Ecosystem[]> =>
-  c.ecosystems.get(`${repo}@${commit}`, () =>
+const treeAt = (c: Ctx, cwd: string, repo: string, commit: string): Promise<string[]> =>
+  c.trees.get(`${repo}@${commit}`, () =>
     runOk("git", ["-C", cwd, "ls-tree", "-r", "--name-only", "-z", commit], {
       timeoutMs: 60_000,
-    }).then((out) => detectEcosystems(parseNulList(out))),
+    }).then(parseNulList),
   );
+
+const ecosystemsAt = (c: Ctx, cwd: string, repo: string, commit: string): Promise<Ecosystem[]> =>
+  c.ecosystems.get(`${repo}@${commit}`, () => treeAt(c, cwd, repo, commit).then(detectEcosystems));
+
+const parsed = (blob: Buffer | null): unknown => {
+  try {
+    return blob ? JSON.parse(blob.toString("utf8")) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** The commit's named workspace packages; one git process reads every package.json. */
+async function packagesAt(
+  cwd: string,
+  commit: string,
+  files: string[],
+): Promise<WorkspacePackage[]> {
+  const paths = packageFiles(files);
+  if (!paths.length) return [];
+  const out = await runOk("git", ["-C", cwd, "cat-file", "--batch"], {
+    input: paths.map((p) => `${commit}:${p}\n`).join(""),
+    timeoutMs: 60_000,
+    stdoutEncoding: "latin1",
+  });
+  return splitBatch(out, paths.length).flatMap((blob, i) => {
+    const pkg = workspacePackage(paths[i] ?? "", parsed(blob));
+    return pkg ? [pkg] : [];
+  });
+}
+
+const indexAt = (c: Ctx, cwd: string, repo: string, commit: string): Promise<RepoIndex> =>
+  c.indexes.get(`${repo}@${commit}`, async () => {
+    const files = await treeAt(c, cwd, repo, commit);
+    return { files: new Set(files), packages: await packagesAt(cwd, commit, files) };
+  });
 
 /** The repo's own category rules at the PR head, as Diff Breakdown reads them from a checkout. */
 async function overridesAt(c: Ctx, cwd: string, commit: string): Promise<Overrides | undefined> {
@@ -248,6 +297,11 @@ export type PrData = {
   breakdown: (guide: StoredGuide, key: string, commit: string) => Promise<Breakdown>;
   /** The guide's skipped files at `commit`: stored with it when it is that commit's, else from git. */
   skipped: (guide: StoredGuide, key: string, commit: string) => Promise<SkippedFile[]>;
+  /** The file an import in `from` points to at `commit`. */
+  importTarget: (
+    guide: StoredGuide,
+    at: { key: string; commit: string; from: string; specifier: string },
+  ) => Promise<ImportTarget>;
 };
 
 export function createPrData(deps: Pick<Ctx, "log" | "cloneOf">): PrData {
@@ -258,6 +312,8 @@ export function createPrData(deps: Pick<Ctx, "log" | "cloneOf">): PrData {
     changed: promiseCache(PR_CACHE_LIMIT),
     breakdowns: promiseCache(PR_CACHE_LIMIT),
     skippedLists: promiseCache(PR_CACHE_LIMIT),
+    trees: promiseCache(PR_CACHE_LIMIT),
+    indexes: promiseCache(PR_CACHE_LIMIT),
     ecosystems: promiseCache(PR_CACHE_LIMIT),
   };
   return {
@@ -275,6 +331,10 @@ export function createPrData(deps: Pick<Ctx, "log" | "cloneOf">): PrData {
         const { at } = await placeAt(c, guide, key, commit);
         return (await triageAt(c, at, commit, prRefs(guide.pr.number).base)).skipped;
       });
+    },
+    importTarget: async (guide, { key, commit, from, specifier }) => {
+      const { at } = await placeAt(c, guide, key, commit);
+      return resolveImport(await indexAt(c, at.cwd, at.repo, commit), from, specifier);
     },
   };
 }

@@ -169,6 +169,8 @@ function workerLinks(guide: PrGuide, say: (text: string) => void) {
       changes.get("", () =>
         orca.plugin.request("breakdown.get", { key, commit }, { timeoutMs: 120_000 }),
       ),
+    resolveImport: (from: string, specifier: string) =>
+      orca.plugin.request("import.resolve", { key, from, specifier }),
     openInOrca: (path: string) =>
       void orca.plugin
         .request("file.open", { repo: guide.pr.repo, number: guide.pr.number, path })

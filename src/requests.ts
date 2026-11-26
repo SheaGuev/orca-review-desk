@@ -100,6 +100,19 @@ function registerGuideData(orca: OrcaWorkerApi, api: WorkerApi): void {
     const guide = await api.requireGuide(key);
     return prData.skipped(guide, key, asked ?? guide.pr.commit);
   });
+  orca.panels.handle("import.resolve", async ({ key, from, specifier }) => {
+    if (typeof from !== "string" || !from || from.includes("\0"))
+      throw fail("invalid", "Expected the importing file's path");
+    if (
+      typeof specifier !== "string" ||
+      !specifier ||
+      specifier.length > 500 ||
+      /[\0\n]/.test(specifier)
+    )
+      throw fail("invalid", "Expected an import specifier");
+    const guide = await api.requireGuide(key);
+    return prData.importTarget(guide, { key, commit: guide.pr.commit, from, specifier });
+  });
   orca.panels.handle("file.open", async ({ repo, number, path }) => {
     const guide = await api.store.guide(prKey(repo, number));
     await api.opener.openFile(repo, guide?.pr.headRef ?? null, path);

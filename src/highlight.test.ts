@@ -72,7 +72,7 @@ test("a row draws its colour runs, cut where a changed word starts and ends", as
     const tokens = await highlightRows("a.ts", rows);
     const row = rows[2];
     assert.ok(row);
-    const el = rowNode(row, () => false, [[11, 14]], tokens.get(2));
+    const el = rowNode(row, () => false, { marks: [[11, 14]], toks: tokens.get(2) });
     const code = el.querySelector(".code");
     assert.equal(code?.textContent, 'const a = "old"');
     const word = code?.querySelector(".word");

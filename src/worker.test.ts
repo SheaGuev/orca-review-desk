@@ -1647,6 +1647,33 @@ test("progress on an older guide's commit is not shown after a refresh", async (
   assert.equal(latest()?.queue[0]?.tour, null);
 });
 
+test("import.resolve finds an import's file at the guide's commit from one ls-tree", async () => {
+  const { worker, calls } = await readyGuide();
+  const ask = (specifier: string) =>
+    worker.request("import.resolve", {
+      key: "acme/api#7",
+      from: "src/CustomerService.ts",
+      specifier,
+    });
+  assert.deepEqual(await ask("./index"), { path: "src/index.ts" });
+  assert.deepEqual(await ask("./missing"), { reason: "not-found" });
+  assert.deepEqual(
+    await ask("lodash"),
+    { reason: "external" },
+    "no workspace package by that name",
+  );
+  await assert.rejects(ask(""), /import specifier/);
+  await assert.rejects(ask("a\nb"), /import specifier/);
+  const trees = calls.filter((c) => c.cmd === "git" && c.args.includes("ls-tree"));
+  assert.equal(trees.length, 1, "the tree is read once per commit, shared with the guide's run");
+  assert.ok(trees[0]?.args.includes(PR_VIEW.headRefOid));
+  const batches = calls.filter(
+    (c) =>
+      c.cmd === "git" && c.args.includes("--batch") && c.options?.input?.includes(":package.json"),
+  );
+  assert.equal(batches.length, 1, "every package.json in one read, then cached");
+});
+
 test("breakdown.get groups the PR's files by kind at the guide's commit, and caches it", async () => {
   const { worker, calls } = await readyGuide();
   const b = await worker.request("breakdown.get", { key: "acme/api#7" });

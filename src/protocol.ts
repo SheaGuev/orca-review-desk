@@ -1,6 +1,7 @@
 // The panel <-> worker contract. src/panel.tsx, src/worker.ts and editor/main.ts all read it.
 import type { Breakdown } from "./breakdown/assemble";
 import type { DiffFile } from "./diff-model";
+import type { ImportTarget } from "./import-resolve";
 import type { Draft, DraftComment, PostedComment, ReviewEvent } from "./review";
 import type { RiskLevel, SkippedFile } from "./schema";
 import type { TourState } from "./tour";
@@ -190,6 +191,11 @@ declare module "orca" {
     "file.open": {
       input: { repo: string; number: number; path: string };
       output: { opened: boolean };
+    };
+    /** The file an import in `from` points to at the guide's commit, from the clone's git. */
+    "import.resolve": {
+      input: { key: string; from: string; specifier: string };
+      output: ImportTarget;
     };
   }
   interface PluginPanelEvents {

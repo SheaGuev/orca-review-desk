@@ -57,7 +57,7 @@ export const isRealFolder = async (cwd: string, rel: string): Promise<boolean> =
  * `git cat-file --batch` output read as latin1 (one character per byte): each object's bytes, or
  * null when git has no such object, in the order asked.
  */
-function splitBatch(out: string, count: number): (Buffer | null)[] {
+export function splitBatch(out: string, count: number): (Buffer | null)[] {
   const blobs: (Buffer | null)[] = [];
   let at = 0;
   for (let i = 0; i < count; i++) {

@@ -463,6 +463,8 @@ html.w-rail { scroll-padding-top: 64px; }
 .dl.k-del .sign { color: var(--danger); font-weight: 700; }
 .dl .code { white-space: pre; padding-right: 24px; }
 /* Changed words: a stronger tint of the row's own colour, plus an underline so it isn't colour alone. */
+.dl .imp { cursor: pointer; }
+.dl .imp:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .dl.k-add .word { background: color-mix(in srgb, var(--add) 38%, transparent); border-radius: 2px; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--add) 70%, transparent); text-underline-offset: 3px; }
 .dl.k-del .word { background: color-mix(in srgb, var(--danger) 36%, transparent); border-radius: 2px; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent); }
 .dl.hunk .code, .dl.eof .code { padding-left: 4px; }
