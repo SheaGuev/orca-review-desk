@@ -17,14 +17,16 @@ Orca.
 
 Nothing reaches GitHub until you press Comment or Post to GitHub.
 
-## Install from this folder
+## Install
 
 You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and `claude` or `codex` signed
 in. Add each repository you review to Orca as a project.
 
 ```sh
-orca plugin install /path/to/this/folder
+orca plugin install SheaGuev/orca-review-desk
 ```
+
+Or from a local checkout: `orca plugin install /path/to/this/folder`.
 
 Orca lists what the plugin can access and prints the command to approve it.
 

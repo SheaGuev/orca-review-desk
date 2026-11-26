@@ -5,6 +5,7 @@
   "name": "Review Desk",
   "version": "0.1.0",
   "description": "PR reviews inside Orca: an AI walkthrough that groups the PR by idea, real diffs in your editor colours, inline comments, GitHub viewed sync, and a worktree on the PR branch.",
+  "repository": "https://github.com/SheaGuev/orca-review-desk",
   "icon": "assets/icon.png",
   "license": "MIT",
   "engines": {
