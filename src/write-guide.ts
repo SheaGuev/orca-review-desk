@@ -15,7 +15,7 @@ import {
   diffUpTo,
   fetchPr,
   hasCommit,
-  hidePrTourFolders,
+  hideOwnFolders,
   LOCKFILE_EXCLUDES,
   logBetween,
   prFiles,
@@ -269,8 +269,8 @@ async function prepareRun(
   outside: readonly FileDiff[],
   skipped: readonly SkippedFile[],
 ): Promise<RunFiles> {
-  await hidePrTourFolders(req.clone.path).catch((e: unknown) =>
-    req.log(`could not add PR Tour's folders to git's exclude list: ${message(e)}`),
+  await hideOwnFolders(req.clone.path).catch((e: unknown) =>
+    req.log(`could not add Review Desk's folders to git's exclude list: ${message(e)}`),
   );
   return writeRunFiles({
     cwd: req.clone.path,

@@ -19,6 +19,13 @@ test("settings of the wrong type fall back to their defaults", () => {
   assert.equal(s.includeAuthored, false);
 });
 
+test("the worktree setting is ask, always or never; anything else asks", () => {
+  assert.equal(readSettings({}).worktreeMode, "ask");
+  assert.equal(readSettings({ worktreeMode: "always" }).worktreeMode, "always");
+  assert.equal(readSettings({ worktreeMode: "never" }).worktreeMode, "never");
+  assert.equal(readSettings({ worktreeMode: "sometimes" }).worktreeMode, "ask");
+});
+
 test("the agent label names the CLI and the model, if one is set", () => {
   assert.equal(agentLabel({ harness: "codex", model: "" }), "Codex");
   assert.equal(
@@ -41,15 +48,15 @@ const item = (over: Partial<QueueItem>) =>
 
 test("the status bar shows the focused branch's guide, else how many reviews wait", () => {
   assert.deepEqual(statusBar({ focused: undefined, onRepo: false, waiting: 0 }), {
-    text: "PR tour",
+    text: "Review Desk",
     tone: "neutral",
-    tooltip: "PR Tour",
+    tooltip: "Review Desk",
   });
   assert.equal(statusBar({ focused: undefined, onRepo: true, waiting: 3 }).text, "Reviews: 3");
   assert.deepEqual(
     statusBar({ focused: item({ status: "generating" }), onRepo: true, waiting: 1 }),
     {
-      text: "PR tour: writing #7…",
+      text: "Review Desk: writing #7…",
       tone: "accent",
     },
   );
@@ -59,7 +66,11 @@ test("the status bar shows the focused branch's guide, else how many reviews wai
       onRepo: true,
       waiting: 1,
     }),
-    { text: "PR tour: Medium risk (older commit)", tone: "warning", tooltip: "Check the flag." },
+    {
+      text: "Review Desk: Medium risk (older commit)",
+      tone: "warning",
+      tooltip: "Check the flag.",
+    },
   );
   // A PR in the queue with no guide yet says nothing about risk.
   assert.equal(

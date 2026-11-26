@@ -4,7 +4,15 @@
 import { mapLimit } from "./cache";
 import type { Clones } from "./clones";
 import { message } from "./errors";
-import { authorAssociation, GH_AT_ONCE, prDetails, requestTimes, type PrDetails } from "./github";
+import type { Clone } from "./git";
+import {
+  authorAssociation,
+  GH_AT_ONCE,
+  myLatestReview,
+  prDetails,
+  requestTimes,
+  type PrDetails,
+} from "./github";
 import type { RepoState } from "./protocol";
 import { savedPr, searchLanes, type Found, type PrFound, type Tracked } from "./queue-items";
 import type { Settings } from "./settings";
@@ -14,6 +22,8 @@ import type { WorkerState } from "./worker-state";
 const MAX_PRS = 40;
 
 type Fetched = { key: string; repo: string; details: PrDetails };
+
+type Review = { at: number; commit: string };
 
 type Deps = {
   state: WorkerState;
@@ -40,6 +50,8 @@ type Asked = {
   associations: Map<string, string>;
   /** Each PR's details with the search hit's `updatedAt` they were read at; asked again once it moves. */
   details: Map<string, { updatedAt: string; details: PrDetails }>;
+  /** Recently reviewed PRs: your latest review, read again once the search hit's `updatedAt` moves. */
+  reviews: Map<string, { updatedAt: string; review: Review | null }>;
 };
 
 /** The PR's details, read again only when the search says it changed since they were read. */
@@ -49,6 +61,18 @@ async function detailsOf(asked: Asked, key: string, f: Found): Promise<PrDetails
   const details = await prDetails(f.hit.repo, f.hit.number);
   asked.details.set(key, { updatedAt: f.hit.updatedAt, details });
   return details;
+}
+
+/** Your latest review of a Recently reviewed PR; null for other lanes, or when it can't be read. */
+async function reviewOf(asked: Asked, key: string, f: Found): Promise<Review | null> {
+  if (f.lane !== "recent") return null;
+  const known = asked.reviews.get(key);
+  if (known && f.hit.updatedAt !== "" && known.updatedAt === f.hit.updatedAt) return known.review;
+  const review = await myLatestReview(f.hit.repo, f.hit.number).catch(() => undefined);
+  // A failed read is asked again next check rather than remembered as "never reviewed".
+  if (review === undefined) return null;
+  asked.reviews.set(key, { updatedAt: f.hit.updatedAt, review });
+  return review;
 }
 
 /**
@@ -96,8 +120,12 @@ async function askRequestTimes(
   });
 }
 
-/** The repositories of the PRs found, each with whether guides are made in it automatically. */
-async function reposOf(store: Store, built: readonly Tracked[]): Promise<RepoState[]> {
+/**
+ * The repositories of the PRs found, each with whether guides are made in it automatically. PRs
+ * you reviewed already never get automatic guides, so they ask nobody to turn a repository on.
+ */
+async function reposOf(store: Store, all: readonly Tracked[]): Promise<RepoState[]> {
+  const built = all.filter((t) => t.item.lane !== "recent");
   const names = [...new Set(built.map((t) => t.item.repo))];
   const optIns = await Promise.all(names.map((repo) => store.optIn(repo)));
   return names.map((repo, i) => {
@@ -111,6 +139,40 @@ async function reposOf(store: Store, built: readonly Tracked[]): Promise<RepoSta
   });
 }
 
+type FetchedPr = Fetched & { found: Found; association: string | null; review: Review | null };
+
+/** A found PR as the queue builds its row from. */
+function prFound(
+  p: FetchedPr,
+  clone: Clone | null,
+  requested: RequestTimes,
+): Parameters<Deps["itemFor"]>[0] {
+  const { key, repo, details: d, found: f, review } = p;
+  return {
+    key,
+    repo,
+    lane: f.lane,
+    details: d,
+    clone,
+    team: f.team,
+    // When your review was last given or asked for, else when the PR was opened, so it still orders.
+    requestedAt:
+      review?.at ??
+      requested.get(key)?.at ??
+      (Date.parse(d.createdAt) || Date.parse(f.hit.updatedAt) || Date.now()),
+    association: p.association,
+    lastReview: review
+      ? { at: review.at, newCommits: review.commit !== "" && review.commit !== d.headRefOid }
+      : null,
+  };
+}
+
+/** Forgets what was asked about PRs no longer found, so they are read afresh if they come back. */
+function forgetGone(asked: Asked, listed: ReadonlySet<string>): void {
+  for (const map of [asked.details, asked.associations, asked.reviews])
+    for (const key of map.keys()) if (!listed.has(key)) map.delete(key);
+}
+
 async function check(deps: Deps, asked: Asked): Promise<void> {
   const { state, store } = deps;
   state.settings = await deps.readSettings();
@@ -122,28 +184,18 @@ async function check(deps: Deps, asked: Asked): Promise<void> {
     details: await detailsOf(asked, key, f),
     found: f,
     association: await associationOf(asked, key, f),
+    review: await reviewOf(asked, key, f),
   }));
-  // PRs no longer found are read afresh if they come back.
-  const listed = new Set(fetched.map((f) => f.key));
-  for (const key of asked.details.keys()) if (!listed.has(key)) asked.details.delete(key);
-  for (const key of asked.associations.keys()) if (!listed.has(key)) asked.associations.delete(key);
+  forgetGone(asked, new Set(fetched.map((f) => f.key)));
   const { requested } = asked;
-  await askRequestTimes(deps, requested, fetched);
+  await askRequestTimes(
+    deps,
+    requested,
+    fetched.filter((f) => f.found.lane !== "recent"),
+  );
   // One at a time: a guide stored without its skipped files asks git, which may fetch.
-  const built = await mapLimit(fetched, 1, ({ key, repo, details: d, found: f, association }) =>
-    deps.itemFor({
-      key,
-      repo,
-      lane: f.lane,
-      details: d,
-      clone: cloneMap.get(repo) ?? null,
-      team: f.team,
-      // When the review was asked for, else when the PR was opened, so the queue still orders.
-      requestedAt:
-        requested.get(key)?.at ??
-        (Date.parse(d.createdAt) || Date.parse(f.hit.updatedAt) || Date.now()),
-      association,
-    }),
+  const built = await mapLimit(fetched, 1, (p) =>
+    deps.itemFor(prFound(p, cloneMap.get(p.repo) ?? null, requested)),
   );
   const repos = await reposOf(store, built);
   state.tracked.clear();
@@ -185,6 +237,11 @@ export function createQueueCheck(deps: Deps): {
   check: () => Promise<void>;
   restore: () => Promise<void>;
 } {
-  const asked: Asked = { requested: new Map(), associations: new Map(), details: new Map() };
+  const asked: Asked = {
+    requested: new Map(),
+    associations: new Map(),
+    details: new Map(),
+    reviews: new Map(),
+  };
   return { check: () => check(deps, asked), restore: () => restore(deps, asked) };
 }

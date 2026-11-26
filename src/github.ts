@@ -136,6 +136,20 @@ export async function prDetails(repo: string, ref: string | number): Promise<PrD
   return prDetailsFrom(parseJson(out), `${repo} ${ref}`);
 }
 
+/** Where a PR's commits live: its branch, and whether that branch is in another repository. */
+export type PrHead = { branch: string; fromFork: boolean };
+
+export async function prHead(repo: string, number: number): Promise<PrHead> {
+  const out = await gh(
+    ["pr", "view", String(number), "-R", repo, "--json", "headRefName,isCrossRepository"],
+    { timeoutMs: 30_000 },
+  );
+  const raw = parseJson(out);
+  if (!isObj(raw) || typeof raw.headRefName !== "string" || !raw.headRefName)
+    throw new Error(`gh pr view ${repo} ${number}: the reply has no head branch`);
+  return { branch: raw.headRefName, fromFork: raw.isCrossRepository === true };
+}
+
 /** `gh pr view --json` output as PrDetails; throws when it lacks what every later step needs. */
 export function prDetailsFrom(raw: unknown, what: string): PrDetails {
   if (
@@ -203,6 +217,33 @@ export async function rateLimitReset(): Promise<number | null> {
 }
 
 /** Your own inline review comments on a PR, for "Since your last review". */
+/** When you last submitted a review on the PR, and the commit it was on; null when you never did. */
+export async function myLatestReview(
+  repo: string,
+  number: number,
+): Promise<{ at: number; commit: string } | null> {
+  const me = await currentLogin();
+  const out = await gh(
+    [
+      "api",
+      "--paginate",
+      `repos/${repo}/pulls/${number}/reviews`,
+      "--jq",
+      `.[] | select(.user.login == "${me}") | {submitted_at, commit_id}`,
+    ],
+    { timeoutMs: 30_000 },
+  );
+  let latest: { at: number; commit: string } | null = null;
+  for (const line of out.split("\n")) {
+    const r = line.trim() ? parseJson(line) : null;
+    if (!isObj(r)) continue;
+    const at = Date.parse(asString(r.submitted_at));
+    if (Number.isFinite(at) && (!latest || at > latest.at))
+      latest = { at, commit: asString(r.commit_id) };
+  }
+  return latest;
+}
+
 export async function myReviewComments(repo: string, number: number): Promise<ReviewComment[]> {
   const me = await currentLogin();
   const out = await gh(
@@ -313,4 +354,63 @@ export async function requestTimes(
     if (at !== null) out.set(n, at);
   }
   return out;
+}
+
+/** Which of a PR's files you marked viewed on GitHub, and the PR's node id the marks are set on. */
+export type ViewedFiles = { prId: string; viewed: string[] };
+
+const VIEWED_QUERY = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      files(first: 100, after: $after) { nodes { path viewerViewedState } pageInfo { hasNextPage endCursor } }
+    }
+  }
+}`;
+
+/**
+ * One page of `VIEWED_QUERY`'s answer. Only VIEWED counts: DISMISSED is a file viewed before it
+ * changed again, which GitHub shows unticked.
+ */
+export function viewedPageFrom(raw: unknown): ViewedFiles & { next: string | null } {
+  const pr = asObj(asObj(asObj(asObj(raw).data).repository).pullRequest);
+  if (typeof pr.id !== "string") throw new Error("GitHub did not return the pull request");
+  const files = asObj(pr.files);
+  const page = asObj(files.pageInfo);
+  return {
+    prId: pr.id,
+    viewed: asList(files.nodes).flatMap((n): string[] =>
+      isObj(n) && typeof n.path === "string" && n.viewerViewedState === "VIEWED" ? [n.path] : [],
+    ),
+    next: page.hasNextPage === true && typeof page.endCursor === "string" ? page.endCursor : null,
+  };
+}
+
+/** GitHub lists at most 3000 files on a PR: 30 pages of 100. */
+const VIEWED_PAGES = 30;
+
+export async function viewedFiles(repo: string, number: number): Promise<ViewedFiles> {
+  const [owner = "", name = ""] = repo.split("/");
+  const out: ViewedFiles = { prId: "", viewed: [] };
+  let after: string | null = null;
+  for (let page = 0; page < VIEWED_PAGES; page++) {
+    const args = ["api", "graphql", "-f", `query=${VIEWED_QUERY}`, "-f", `owner=${owner}`];
+    args.push("-f", `name=${name}`, "-F", `number=${number}`);
+    if (after) args.push("-f", `after=${after}`);
+    const read = viewedPageFrom(parseJson(await gh(args, { timeoutMs: 30_000 })));
+    out.prId = read.prId;
+    out.viewed.push(...read.viewed);
+    after = read.next;
+    if (!after) break;
+  }
+  return out;
+}
+
+/** Ticks or unticks Viewed on one file of the PR with node id `prId`, as GitHub's checkbox does. */
+export async function setFileViewed(prId: string, path: string, viewed: boolean): Promise<void> {
+  const field = viewed ? "markFileAsViewed" : "unmarkFileAsViewed";
+  const query = `mutation($id: ID!, $path: String!) { ${field}(input: { pullRequestId: $id, path: $path }) { clientMutationId } }`;
+  await gh(["api", "graphql", "-f", `query=${query}`, "-f", `id=${prId}`, "-f", `path=${path}`], {
+    timeoutMs: 30_000,
+  });
 }

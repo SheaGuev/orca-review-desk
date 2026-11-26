@@ -174,7 +174,7 @@ test("a review goes from the overview through a stop to a posted review", async 
       "Finish review",
       "one name for the last step, as the bar's button says",
     );
-    assert.equal(document.querySelectorAll(".pending-list textarea").length, 1);
+    assert.equal(document.querySelectorAll(".review-comments .rc.pending").length, 1);
     // In the order of the work: the open major finding comes before the review, and deciding on
     // it takes it off the list.
     const work = document.querySelector(".wrap-main")?.textContent ?? "";

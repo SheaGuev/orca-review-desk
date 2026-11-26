@@ -5,9 +5,21 @@ import { inRanges, type FileDiff } from "./diff";
 import { message } from "./errors";
 import { fetchPr, prFiles } from "./git";
 import { currentLogin, prDetails, type PrDetails } from "./github";
-import { postReview } from "./post-review";
-import type { ReviewInfo, ReviewSubmitResult } from "./protocol";
-import { reviewProblem, staleComments, type Draft, type ReviewEvent } from "./review";
+import { postComment, postReview } from "./post-review";
+import type {
+  CommentRequest,
+  ReviewCommentResult,
+  ReviewInfo,
+  ReviewSubmitResult,
+} from "./protocol";
+import {
+  rangeProblem,
+  reviewProblem,
+  staleComments,
+  type Draft,
+  type DraftComment,
+  type ReviewEvent,
+} from "./review";
 import { SCHEMA_ID, type DiffContext } from "./schema";
 import type { Store, StoredGuide } from "./store";
 
@@ -15,6 +27,7 @@ export type ReviewService = {
   info: (key: string) => Promise<ReviewInfo>;
   save: (key: string, draft: Draft) => Promise<void>;
   submit: (key: string, event: ReviewEvent, body: string) => Promise<ReviewSubmitResult>;
+  comment: (key: string, comment: CommentRequest) => Promise<ReviewCommentResult>;
 };
 
 type Deps = {
@@ -75,6 +88,7 @@ async function info(deps: Deps, key: string): Promise<ReviewInfo> {
     draft: await deps.store.draft(key, guide.pr.commit),
     canApprove: !me || guide.pr.author.toLowerCase() !== me.toLowerCase(),
     head: deps.headOf(key) ?? guide.pr.commit,
+    posted: await deps.store.posted(key),
   };
 }
 
@@ -152,10 +166,56 @@ async function submit(
   return { outcome: "posted", event, url: posted.url, notPosted: posted.notPosted };
 }
 
+/** Why GitHub would refuse `c` on the PR as it is now, or null when it takes it. */
+function commentProblem(c: CommentRequest, ctx: DiffContext, moved: boolean): string | null {
+  if (!c.body.trim()) return "The comment is empty.";
+  if (!ctx.changed.includes(c.path)) return `${c.path} is no longer changed in this PR.`;
+  if (c.line === null) return null;
+  const problem = rangeProblem(ctx.isCommentable, c.path, c.startLine ?? c.line, c.line);
+  if (!problem) return null;
+  return moved ? `The PR changed since this guide was written. ${problem}` : problem;
+}
+
+/** Posts one comment now, after checking it still sits on the PR's diff, and keeps it as posted. */
+async function comment(deps: Deps, key: string, c: CommentRequest): Promise<ReviewCommentResult> {
+  const guide = await deps.requireGuide(key);
+  const { repo, number } = guide.pr;
+  const now = await prDetails(repo, number)
+    .then(async (details) => ({ details, diff: await diffAt(deps, guide, details) }))
+    .catch((e: unknown) => message(e));
+  if (typeof now === "string") return { outcome: "refused", message: now };
+  const head = now.details.headRefOid;
+  const problem = commentProblem(c, now.diff.ctx, head !== guide.pr.commit);
+  if (problem) return { outcome: "refused", message: problem };
+  const draftComment: DraftComment = { id: "posting", ...c, source: "manual" };
+  const posted = await postComment({
+    repo,
+    number,
+    comment: draftComment,
+    head,
+    known: now.diff.text,
+  }).catch((e: unknown) => message(e));
+  if (typeof posted === "string") return { outcome: "refused", message: posted };
+  const range = c.startLine !== undefined && c.line !== null && c.startLine < c.line;
+  const record = {
+    id: posted.id,
+    path: c.path,
+    line: c.line,
+    ...(range ? { startLine: c.startLine } : {}),
+    body: c.body.trim(),
+    url: posted.url,
+    at: Date.now(),
+  };
+  await deps.store.setPosted(key, [...(await deps.store.posted(key)), record]);
+  deps.log(`${key}: posted a comment on ${c.path}`);
+  return { outcome: "posted", comment: record };
+}
+
 export function createReviewService(deps: Deps): ReviewService {
   return {
     info: (key) => info(deps, key),
     save: (key, draft) => save(deps, key, draft),
     submit: (key, event, body) => submit(deps, key, event, body),
+    comment: (key, c) => comment(deps, key, c),
   };
 }

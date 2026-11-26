@@ -3,12 +3,13 @@
 //
 //   guide:<repo#n>  the guide            meta:<repo#n>   what you last saw, the last failure
 //   draft:<repo#n>  the review draft     tour:<repo#n>   tour progress
+//   posted:<repo#n> comments posted on their own, outside a review
 //   optin:<repo>    automatic guides     runs            automatic runs today
 //   lastCheck       the PRs the last check found, so a restart lists them before checking
 import type { OrcaWorkerApi } from "orca/worker";
 import { asObj, asString, isObj, plainJson } from "./json";
 import type { QueueItem } from "./protocol";
-import { asDraft, type Draft } from "./review";
+import { asDraft, asPostedComments, type Draft, type PostedComment } from "./review";
 import { parseGuide, SCHEMA_ID, upgradeGuide, type PrGuide, type PrGuideV1 } from "./schema";
 import { tourKey, type TourState } from "./tour";
 
@@ -66,6 +67,7 @@ export type SavedPr = Pick<
   | "team"
   | "ownedFiles"
   | "manualReason"
+  | "lastReview"
 > & {
   branch: string;
   /** GitHub's author_association as last read; left out when it was not read. */
@@ -77,6 +79,13 @@ export type LastCheck = { checkedAt: number; prs: SavedPr[] };
 
 const isString = (v: unknown): v is string => typeof v === "string";
 const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** A saved review time; lists saved before the Recently reviewed lane have none. */
+function asLastReview(v: unknown): SavedPr["lastReview"] {
+  return isObj(v) && isNumber(v.at) && typeof v.newCommits === "boolean"
+    ? { at: v.at, newCommits: v.newCommits }
+    : null;
+}
 
 function asSavedPr(v: unknown): SavedPr | null {
   if (!isObj(v)) return null;
@@ -96,7 +105,7 @@ function asSavedPr(v: unknown): SavedPr | null {
     !isNumber(deletions) ||
     !isNumber(changedFiles) ||
     !isNumber(requestedAt) ||
-    (lane !== "user" && lane !== "team" && lane !== "authored") ||
+    (lane !== "user" && lane !== "team" && lane !== "authored" && lane !== "recent") ||
     typeof draft !== "boolean" ||
     typeof hasClone !== "boolean" ||
     !(team === null || isString(team)) ||
@@ -122,6 +131,7 @@ function asSavedPr(v: unknown): SavedPr | null {
     team,
     ownedFiles,
     manualReason,
+    lastReview: asLastReview(v.lastReview),
     branch,
     ...(isString(association) ? { association } : {}),
   };
@@ -168,6 +178,7 @@ async function prune(
       storage.delete(storageKey),
       storage.delete(`meta:${key}`),
       storage.delete(`draft:${key}`),
+      storage.delete(`posted:${key}`),
       storage.delete(tourKey(key)),
     ]);
   }
@@ -199,6 +210,11 @@ export function createStore(storage: Storage) {
     setDraft: (key: string, draft: Draft): Promise<void> =>
       storage.set(`draft:${key}`, plainJson(draft)),
     deleteDraft: (key: string): Promise<void> => storage.delete(`draft:${key}`),
+
+    posted: async (key: string): Promise<PostedComment[]> =>
+      asPostedComments(await storage.get(`posted:${key}`)),
+    setPosted: (key: string, posted: PostedComment[]): Promise<void> =>
+      storage.set(`posted:${key}`, plainJson(posted)),
 
     /** Tour progress as stored; `tourState` checks it against the guide it is read for. */
     tour: (key: string): Promise<unknown> => storage.get(tourKey(key)),

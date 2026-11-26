@@ -25,16 +25,16 @@ export function statusBar(input: {
 }): StatusBar {
   const { focused } = input;
   if (focused?.status === "generating")
-    return { text: `PR tour: writing #${focused.number}…`, tone: "accent" };
+    return { text: `Review Desk: writing #${focused.number}…`, tone: "accent" };
   if (focused?.risk)
     return {
-      text: `PR tour: ${RISK_WORD[focused.risk]} risk${focused.status === "stale" ? " (older commit)" : ""}`,
+      text: `Review Desk: ${RISK_WORD[focused.risk]} risk${focused.status === "stale" ? " (older commit)" : ""}`,
       tone: RISK_TONE[focused.risk],
       tooltip: (focused.riskSummary ?? "").slice(0, 200),
     };
   return {
-    text: input.waiting ? `Reviews: ${input.waiting}` : "PR tour",
+    text: input.waiting ? `Reviews: ${input.waiting}` : "Review Desk",
     tone: "neutral",
-    tooltip: input.onRepo ? "Open or generate the guide for this branch" : "PR Tour",
+    tooltip: input.onRepo ? "Open or generate the guide for this branch" : "Review Desk",
   };
 }

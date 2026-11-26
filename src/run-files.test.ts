@@ -75,23 +75,23 @@ test("writes the PR's files and the overflow diffs under neutral numbered names"
   const run = await writeRunFiles({
     cwd: dir,
     pr: 7,
-    headRef: "refs/pr-tour/pr-7",
+    headRef: "refs/pr-review/pr-7",
     files: CHANGED,
     outside: [big, gone],
     skipped: new Set(["pnpm-lock.yaml", "gen/api.ts"]),
   });
 
-  assert.equal(run.dir, ".orca/pr-tour-runs/7");
+  assert.equal(run.dir, ".orca/pr-review-runs/7");
   // One git process for every PR version, at the PR's ref; skipped, binary and deleted files are not asked for.
   const git = calls.filter((c) => c.cmd === "git");
   assert.equal(git.length, 1);
   assert.deepEqual(git[0]?.args, ["-C", dir, "cat-file", "--batch"]);
   assert.equal(
     git[0]?.options?.input,
-    "refs/pr-tour/pr-7:src/a.ts\nrefs/pr-tour/pr-7:CLAUDE.md\nrefs/pr-tour/pr-7:src/big.ts\n",
+    "refs/pr-review/pr-7:src/a.ts\nrefs/pr-review/pr-7:CLAUDE.md\nrefs/pr-review/pr-7:src/big.ts\n",
   );
 
-  const root = join(dir, ".orca/pr-tour-runs/7");
+  const root = join(dir, ".orca/pr-review-runs/7");
   assert.deepEqual((await readdir(root)).sort(), ["diffs", "head", "index.txt"]);
   assert.deepEqual(await readdir(join(root, "head")), ["0001.txt", "0002.txt", "0003.txt"]);
   assert.deepEqual(await readdir(join(root, "diffs")), ["0003.diff", "0004.diff"]);
@@ -122,12 +122,12 @@ test("writes the PR's files and the overflow diffs under neutral numbered names"
   assert.deepEqual(
     run.diffs,
     new Map([
-      ["src/big.ts", ".orca/pr-tour-runs/7/diffs/0003.diff"],
-      ["src/gone.ts", ".orca/pr-tour-runs/7/diffs/0004.diff"],
+      ["src/big.ts", ".orca/pr-review-runs/7/diffs/0003.diff"],
+      ["src/gone.ts", ".orca/pr-review-runs/7/diffs/0004.diff"],
     ]),
   );
-  assert.equal(run.byPrepared.get(".orca/pr-tour-runs/7/head/0002.txt"), "CLAUDE.md");
-  assert.equal(run.byPrepared.get(".orca/pr-tour-runs/7/diffs/0004.diff"), "src/gone.ts");
+  assert.equal(run.byPrepared.get(".orca/pr-review-runs/7/head/0002.txt"), "CLAUDE.md");
+  assert.equal(run.byPrepared.get(".orca/pr-review-runs/7/diffs/0004.diff"), "src/gone.ts");
   assert.equal(run.byPrepared.size, 5);
 });
 
@@ -137,16 +137,16 @@ test("a file git does not have at the PR head gets no PR version", async () => {
   const run = await writeRunFiles({
     cwd: dir,
     pr: 3,
-    headRef: "refs/pr-tour/pr-3",
+    headRef: "refs/pr-review/pr-3",
     files: [file("src/a.ts"), file("src/b.ts")],
     outside: [],
     skipped: new Set(),
   });
   assert.equal(
-    await readFile(join(dir, ".orca/pr-tour-runs/3/index.txt"), "utf8"),
+    await readFile(join(dir, ".orca/pr-review-runs/3/index.txt"), "utf8"),
     "0002  head  src/b.ts\n",
   );
-  assert.deepEqual([...run.byPrepared], [[".orca/pr-tour-runs/3/head/0002.txt", "src/b.ts"]]);
+  assert.deepEqual([...run.byPrepared], [[".orca/pr-review-runs/3/head/0002.txt", "src/b.ts"]]);
 });
 
 test("a run's folder is removed after it, and stale ones when the worker starts", async () => {
@@ -155,26 +155,30 @@ test("a run's folder is removed after it, and stale ones when the worker starts"
   await writeRunFiles({
     cwd: dir,
     pr: 7,
-    headRef: "refs/pr-tour/pr-7",
+    headRef: "refs/pr-review/pr-7",
     files: [file("src/a.ts")],
     outside: [],
     skipped: new Set(),
   });
-  await mkdir(join(dir, ".orca/pr-tour-runs/9/head"), { recursive: true });
-  await writeFile(join(dir, ".orca/pr-tour-runs/9/head/0001.txt"), "left by a crash");
-  await mkdir(join(dir, ".orca/pr-tour"));
-  await writeFile(join(dir, ".orca/pr-tour/pr-7.prtour.json"), "{}");
+  await mkdir(join(dir, ".orca/pr-review-runs/9/head"), { recursive: true });
+  await writeFile(join(dir, ".orca/pr-review-runs/9/head/0001.txt"), "left by a crash");
+  await mkdir(join(dir, ".orca/pr-review"));
+  await writeFile(join(dir, ".orca/pr-review/pr-7.prreview.json"), "{}");
 
   await removeRunFiles(dir, 7);
   assert.deepEqual(
-    await readdir(join(dir, ".orca/pr-tour-runs")),
+    await readdir(join(dir, ".orca/pr-review-runs")),
     ["9"],
     "another run's folder stays",
   );
 
   await removeStaleRuns([dir, join(dir, "no-such-clone")]);
-  assert.deepEqual(await readdir(join(dir, ".orca/pr-tour")), ["pr-7.prtour.json"], "guides stay");
-  assert.deepEqual(await readdir(join(dir, ".orca")), ["pr-tour"], "Orca's own folder stays");
+  assert.deepEqual(
+    await readdir(join(dir, ".orca/pr-review")),
+    ["pr-7.prreview.json"],
+    "guides stay",
+  );
+  assert.deepEqual(await readdir(join(dir, ".orca")), ["pr-review"], "Orca's own folder stays");
 });
 
 test("refuses to write through a .orca that is not a real folder", async () => {
@@ -187,7 +191,7 @@ test("refuses to write through a .orca that is not a real folder", async () => {
       writeRunFiles({
         cwd: dir,
         pr: 7,
-        headRef: "refs/pr-tour/pr-7",
+        headRef: "refs/pr-review/pr-7",
         files: [file("src/a.ts")],
         outside: [],
         skipped: new Set(),
@@ -196,10 +200,10 @@ test("refuses to write through a .orca that is not a real folder", async () => {
     );
     assert.deepEqual(await readdir(elsewhere), []);
     // Cleanup after the refused run doesn't delete through the link either.
-    await mkdir(join(elsewhere, "pr-tour-runs/7"), { recursive: true });
+    await mkdir(join(elsewhere, "pr-review-runs/7"), { recursive: true });
     await removeRunFiles(dir, 7);
     await removeStaleRuns([dir]);
-    assert.deepEqual(await readdir(join(elsewhere, "pr-tour-runs")), ["7"]);
+    assert.deepEqual(await readdir(join(elsewhere, "pr-review-runs")), ["7"]);
   } finally {
     await rm(elsewhere, { recursive: true, force: true });
   }
@@ -211,7 +215,7 @@ test("run files live under .orca/, which Orca's dev watcher skips, so a self-rev
   const run = await writeRunFiles({
     cwd: dir,
     pr: 7,
-    headRef: "refs/pr-tour/pr-7",
+    headRef: "refs/pr-review/pr-7",
     files: CHANGED,
     outside: [],
     skipped: new Set(),

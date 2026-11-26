@@ -56,13 +56,13 @@ export const STOP_WHYS: readonly StopWhy[] = [
 ];
 
 /**
- * One stop of the guided tour, which covers every changed file exactly once (files skipped by
- * design aside, see `SkippedFile`). A deep stop explains one idea next to its hunks; a skim stop
- * groups routine or repeated changes, shows its first file's hunks and lists the others.
+ * One stop of the guided tour: a group of files that make one idea, the tour covering every changed
+ * file exactly once (files skipped by design aside, see `SkippedFile`). A deep group holds a file
+ * that needs close reading; a skim group holds only routine or repeated changes.
  */
 export type Stop = {
   depth: StopDepth;
-  /** At least one; the first is the primary (deep) or representative (skim) file. */
+  /** At least one; the first is the group's core (deep) or representative (skim) file. */
   files: string[];
   why: StopWhy;
   areaId: string;
@@ -103,6 +103,9 @@ export function upgradeStop(r: Stop | LegacyStop): Stop {
 
 /** Most ranges a stop may focus on, so a stop stays one idea. */
 export const MAX_FOCUS = 3;
+
+/** Most stops the agent may write: the tour is a handful of groups, not a page per file. */
+export const MAX_STOPS = 6;
 
 /** What the agent writes. Counts, commit and provenance are filled in by the worker, never trusted from the agent. */
 export type AgentGuide = {
@@ -546,9 +549,9 @@ function references(p: Problems, g: AgentGuide, ctx: DiffContext): void {
 export const DEEP_SEVERITIES: readonly Severity[] = ["blocker", "major"];
 
 /**
- * The tour's coverage rules as repair-round problems: every changed file not skipped in exactly
- * one stop, skipped files in none, and risky files and files with a blocker or major finding in
- * a deep stop.
+ * The tour's coverage rules as repair-round problems: at most `MAX_STOPS` stops, every changed file
+ * not skipped in exactly one stop, skipped files in none, and risky files and files with a blocker
+ * or major finding in a deep stop.
  */
 export function tourCoverageProblems(
   g: Pick<AgentGuide, "readingOrder" | "findings">,
@@ -556,6 +559,10 @@ export function tourCoverageProblems(
   rules: TourRules,
 ): string[] {
   const p: string[] = [];
+  if (g.readingOrder.length > MAX_STOPS)
+    p.push(
+      `readingOrder: ${g.readingOrder.length} stops; group the PR into at most ${MAX_STOPS} by merging stops on the same idea, with unit tests in the stop of the code they test`,
+    );
   const severe = new Set(
     g.findings.filter((f) => DEEP_SEVERITIES.includes(f.severity)).map((f) => f.file),
   );
@@ -576,19 +583,15 @@ export function tourCoverageProblems(
         );
       else first.set(f, i);
       if (r.depth === "skim" && severe.has(f))
-        p.push(
-          `readingOrder[${i}]: "${f}" has a blocker or major finding; give it a deep stop of its own`,
-        );
+        p.push(`readingOrder[${i}]: "${f}" has a blocker or major finding; make this stop deep`);
       else if (r.depth === "skim" && rules.risky.has(f))
-        p.push(
-          `readingOrder[${i}]: "${f}" is a ${rules.risky.get(f)}; give it a deep stop of its own`,
-        );
+        p.push(`readingOrder[${i}]: "${f}" is a ${rules.risky.get(f)}; make this stop deep`);
     }),
   );
   for (const f of changed)
     if (!first.has(f) && !rules.skipped.has(f))
       p.push(
-        `readingOrder: "${f}" is in no stop; every changed file goes in exactly one stop (group routine ones into a skim stop)`,
+        `readingOrder: "${f}" is in no stop; every changed file goes in exactly one stop (add it to the stop of the idea it serves)`,
       );
   return p;
 }

@@ -400,7 +400,7 @@ export async function runAgent(
       `The prompt is too long for ${spec.label}'s command line (${bytes.toLocaleString("en-US")} bytes, at most ${max.toLocaleString("en-US")})`,
     );
   if (!(await isInstalled(spec.binary))) throw new AgentMissing(spec.label, spec.binary);
-  const dir = await mkdtemp(join(tmpdir(), "pr-tour-"));
+  const dir = await mkdtemp(join(tmpdir(), "review-desk-"));
   const outFile = join(dir, "last-message.txt");
   const env = agentEnv(id);
   const input = spec.promptDelivery === "stdin" ? prompt : "";

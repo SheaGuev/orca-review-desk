@@ -85,8 +85,10 @@ test("a saved list in any other shape reads as none", async () => {
     createStore(fakeStorage({ lastCheck: value }).storage).lastCheck();
   assert.deepEqual(await read({ checkedAt: 9, prs: [{ ...pr, extra: 1 }] }), {
     checkedAt: 9,
-    prs: [pr],
+    prs: [{ ...pr, lastReview: null }],
   });
+  const recent = { ...pr, lane: "recent", lastReview: { at: 4, newCommits: true } };
+  assert.deepEqual(await read({ checkedAt: 9, prs: [recent] }), { checkedAt: 9, prs: [recent] });
   assert.equal(await read(null), null);
   assert.equal(await read({ checkedAt: "9", prs: [pr] }), null);
   assert.equal(await read({ checkedAt: 9, prs: [{ ...pr, lane: "other" }] }), null);

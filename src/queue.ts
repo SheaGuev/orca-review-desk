@@ -36,16 +36,21 @@ export function repoLabels(repos: readonly string[]): Map<string, string> {
 const inQueue = (i: QueueItem): boolean =>
   i.manualReason === null || i.risk !== null || i.status === "ready" || i.status === "stale";
 
-export type Grouped = { queue: QueueItem[]; notQueued: QueueItem[]; authored: QueueItem[] };
+export type Grouped = {
+  queue: QueueItem[];
+  notQueued: QueueItem[];
+  authored: QueueItem[];
+  recent: QueueItem[];
+};
 
 /**
  * Direct and team requests that get a guide (or already have one) form the queue; the rest are
- * Not queued with their reason; your own PRs stay apart.
+ * Not queued with their reason; your own PRs and the ones you reviewed lately stay apart.
  */
 export function buildQueue(items: readonly QueueItem[]): Grouped {
   const labels = repoLabels([...new Set(items.map((i) => i.repo))]);
   const labelled = items.map((i) => ({ ...i, repoLabel: labels.get(i.repo) ?? i.repo }));
-  const requests = labelled.filter((i) => i.lane !== "authored");
+  const requests = labelled.filter((i) => i.lane === "user" || i.lane === "team");
   const queue = requests
     .filter(inQueue)
     .sort(compareQueue)
@@ -58,5 +63,9 @@ export function buildQueue(items: readonly QueueItem[]): Grouped {
     .filter((i) => i.lane === "authored")
     .sort(compareQueue)
     .map((i) => ({ ...i, position: null }));
-  return { queue, notQueued, authored };
+  const recent = labelled
+    .filter((i) => i.lane === "recent")
+    .sort((a, b) => (b.lastReview?.at ?? 0) - (a.lastReview?.at ?? 0) || a.key.localeCompare(b.key))
+    .map((i) => ({ ...i, position: null }));
+  return { queue, notQueued, authored, recent };
 }

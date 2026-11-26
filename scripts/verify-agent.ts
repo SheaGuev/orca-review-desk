@@ -55,7 +55,7 @@ const exists = (path: string) =>
 
 /**
  * An "origin" with `main` and the PR at `refs/pull/7/head`, as GitHub has it, and a clone of it on
- * `main`: `writeGuide` fetches the PR into `refs/pr-tour/*` from there (the clone rewrites the PR's
+ * `main`: `writeGuide` fetches the PR into `refs/pr-review/*` from there (the clone rewrites the PR's
  * GitHub URL to it), as it does from GitHub.
  */
 async function makeFixture(root: string) {
@@ -208,7 +208,7 @@ async function main(): Promise<number> {
   const { id, model } = parseArgs(process.argv.slice(2));
   const spec = AGENTS[id];
   await loadLoginPath();
-  const root = await mkdtemp(join(tmpdir(), "pr-tour-verify-"));
+  const root = await mkdtemp(join(tmpdir(), "review-desk-verify-"));
   const f = await makeFixture(root);
   console.log(`${spec.label}${model ? ` · ${model}` : ""} in ${f.clone}`);
   const outcome = await generate(id, model, f);

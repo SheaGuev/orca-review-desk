@@ -4,7 +4,7 @@ import { message } from "../src/errors";
 import type { StopLike } from "../src/overview";
 import type { ReviewInfo } from "../src/protocol";
 import { prKey } from "../src/repo";
-import type { Draft, DraftComment } from "../src/review";
+import type { Draft, DraftComment, PostedComment } from "../src/review";
 import type { PrGuide } from "../src/schema";
 import { h } from "./dom";
 
@@ -32,6 +32,8 @@ export type ReviewSession = {
   draft: Draft;
   /** Comments the worker reported as off the diff after the PR moved, by id. */
   stale: Set<string>;
+  /** Comments posted on their own (Comment, not Add to review), oldest first; never in the draft. */
+  posted: PostedComment[];
   nav: ReviewNav | null;
   /** The review's own status line: saving failed, posted, why nothing was posted. */
   readonly status: HTMLElement;
@@ -107,6 +109,7 @@ export function createSession(input: {
     announce: input.announce,
     draft: info.draft,
     stale: new Set(),
+    posted: info.posted ?? [],
     nav: null,
     status,
     say: (text) => {

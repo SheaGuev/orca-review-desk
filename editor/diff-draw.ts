@@ -15,7 +15,7 @@ import {
   renderPieces,
   type Note,
 } from "./diff-rows";
-import { h } from "./dom";
+import { h, splitPath } from "./dom";
 import type { RowTokens } from "./highlight";
 import { plural } from "./parts";
 import { cardOf, type Review } from "./review";
@@ -39,6 +39,8 @@ export type View = {
   readonly review: Review | null;
   /** A tour stop's ranges, or null for a whole file. */
   readonly focus: readonly LineRange[] | null;
+  /** Lines to mark (a group's focus) while every hunk stays shown. */
+  readonly marks: readonly LineRange[] | null;
   readonly frame: DiffFrame;
   /** The path shown, or null before the first `show`. */
   current: string | null;
@@ -86,6 +88,8 @@ export function drawBody(v: View): void {
     (line) => v.review !== null && v.current !== null && v.review.canComment(v.current, line),
   );
   v.rowEl = drawn.rowEl;
+  for (const [line, row] of drawn.rowEl)
+    if (v.marks?.some((m) => m.start <= line && line <= m.end)) row.classList.add("focus-line");
   lines.replaceChildren(drawn.nodes);
   moreBox.replaceChildren();
   if (!v.full || v.limit >= v.rows.length) return;
@@ -182,6 +186,13 @@ function notesFor(v: View, path: string): Note[] {
           ]
         : [],
     ),
+    ...(review
+      ? review.postedOn(path).map((c) => ({
+          line: c.line,
+          node: review.postedCard(c),
+          summary: () => h("span", { class: "muted" }, `Your posted comment on ${commentPlace(c)}`),
+        }))
+      : []),
     ...(v.lineComposer
       ? [
           {
@@ -231,8 +242,13 @@ export function drawNotes(v: View): void {
 
 /** The header's path and +/− counts. */
 export function drawHeader(v: View, path: string): void {
-  const { pathText, meta, pendingMeta } = v.frame;
-  pathText.textContent = path;
+  const { pathText, meta, pendingMeta, toggle } = v.frame;
+  const [dir, name] = splitPath(path);
+  pathText.replaceChildren(
+    ...(dir ? [h("span", { class: "dv-dir" }, dir)] : []),
+    h("span", { class: "dv-base" }, name),
+  );
+  toggle.title = path;
   meta.replaceChildren(
     ...(v.data
       ? [

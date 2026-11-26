@@ -11,6 +11,8 @@ const base: QueueState = {
   queue: [],
   notQueued: [],
   authored: [],
+  recent: [],
+  recentDays: 14,
   repos: [],
   checking: false,
   checkedAt: now - 60_000,
@@ -47,6 +49,7 @@ const item = (over: Partial<QueueItem>): QueueItem => ({
   repoLabel: "api",
   tour: null,
   pendingComments: 0,
+  lastReview: null,
   ...over,
 });
 

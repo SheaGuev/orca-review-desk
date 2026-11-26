@@ -46,10 +46,10 @@ test("files in no stop go in one skim stop at the end, Other changes", () => {
   });
 });
 
-test("a missing risky or severe file gets its own deep stop instead", () => {
+test("missing files share Other changes, deep and leading when any must be read closely", () => {
   const { stops } = enforceCoverage(
     [stop({})],
-    ["a.ts", "package.json", "b.ts", "c.ts"],
+    ["a.ts", "c.ts", "package.json", "b.ts"],
     [major("b.ts", "Drops the reason")],
     rules({}, { "package.json": "dependency file" }),
   );
@@ -57,9 +57,7 @@ test("a missing risky or severe file gets its own deep stop instead", () => {
     stops.map((s) => [s.depth, s.files, s.why, s.headline]),
     [
       ["deep", ["a.ts"], "core", "h"],
-      ["deep", ["package.json"], "risky", "Dependency file package.json changed"],
-      ["deep", ["b.ts"], "finding", "Drops the reason"],
-      ["skim", ["c.ts"], "routine", OTHER_HEADLINE],
+      ["deep", ["package.json", "b.ts", "c.ts"], "finding", OTHER_HEADLINE],
     ],
   );
 });
@@ -102,31 +100,38 @@ test("skipped and unchanged files leave their stop; focus goes with its first fi
   );
 });
 
-test("risky and severe files in a skim stop move to deep stops right after it", () => {
+test("a skim stop holding a risky or severe file becomes deep, its files kept together", () => {
   const focus = [{ start: 1, end: 4 }];
   const { stops, fixed } = enforceCoverage(
     [
-      stop({ depth: "skim", why: "repeated", files: ["x.ts", "ci.yml", "y.ts", "z.ts"], focus }),
+      stop({
+        depth: "skim",
+        why: "repeated",
+        files: ["x.ts", "ci.yml", "y.ts", "z.ts"],
+        differences: "z.ts also renames",
+        focus,
+      }),
       stop({ files: ["a.ts"] }),
     ],
     ["x.ts", "ci.yml", "y.ts", "z.ts", "a.ts"],
     [major("y.ts", "Wrong guard"), { ...major("y.ts", "Lesser"), severity: "minor" }],
     rules({}, { "ci.yml": "CI/CD file" }),
   );
-  assert.deepEqual(
-    stops.map((s) => [s.depth, s.files, s.why, s.headline, s.focus ?? null]),
-    [
-      ["skim", ["x.ts", "z.ts"], "repeated", "h", focus],
-      ["deep", ["ci.yml"], "risky", "CI/CD file ci.yml changed", null],
-      ["deep", ["y.ts"], "finding", "Wrong guard", null],
-      ["deep", ["a.ts"], "core", "h", null],
-    ],
-  );
-  assert.equal(fixed.length, 2);
+  assert.deepEqual(stops, [
+    {
+      depth: "deep",
+      files: ["x.ts", "ci.yml", "y.ts", "z.ts"],
+      why: "finding",
+      areaId: "rt",
+      headline: "h",
+      focus,
+    },
+    stop({ files: ["a.ts"] }),
+  ]);
+  assert.deepEqual(fixed, ["stop 1: made deep for ci.yml, y.ts"]);
 });
 
-test("a skim stop with only must-be-deep files becomes deep stops; the first keeps its text", () => {
-  const focus = [{ start: 1, end: 4 }];
+test("a skim stop of only risky files becomes one deep stop that keeps its text", () => {
   const { stops } = enforceCoverage(
     [
       stop({
@@ -135,8 +140,6 @@ test("a skim stop with only must-be-deep files becomes deep stops; the first kee
         files: ["ci.yml", "deploy.yml"],
         headline: "CI runs on Bun",
         detail: "d",
-        differences: "none",
-        focus,
       }),
     ],
     ["ci.yml", "deploy.yml"],
@@ -146,19 +149,11 @@ test("a skim stop with only must-be-deep files becomes deep stops; the first kee
   assert.deepEqual(stops, [
     {
       depth: "deep",
-      files: ["ci.yml"],
+      files: ["ci.yml", "deploy.yml"],
       why: "risky",
       areaId: "rt",
       headline: "CI runs on Bun",
       detail: "d",
-      focus,
-    },
-    {
-      depth: "deep",
-      files: ["deploy.yml"],
-      why: "risky",
-      areaId: "rt",
-      headline: "CI/CD file deploy.yml changed",
     },
   ]);
   // Stored as plain JSON: nothing undefined.

@@ -9,8 +9,9 @@
 // rest out: editor/review-session.ts keeps the draft, editor/review-bar.ts and
 // editor/review-verdict.ts draw the controls.
 import { inRanges } from "../src/diff";
+import { message } from "../src/errors";
 import type { StopLike } from "../src/overview";
-import type { ReviewInfo } from "../src/protocol";
+import type { CommentRequest, ReviewCommentResult, ReviewInfo } from "../src/protocol";
 import { prKey } from "../src/repo";
 import {
   commentPlace,
@@ -18,6 +19,7 @@ import {
   openFindings,
   rangeProblem,
   type DraftComment,
+  type PostedComment,
 } from "../src/review";
 import type { Finding, PrGuide } from "../src/schema";
 import { composerBox, newId, type ComposerState } from "./composer";
@@ -59,6 +61,10 @@ export type Review = {
   comments: (path: string) => DraftComment[];
   /** Every draft comment, as they are now. */
   all: () => DraftComment[];
+  /** Comments on `path` posted on their own (Comment), oldest first. */
+  postedOn: (path: string) => PostedComment[];
+  /** A posted comment as a quiet card: Posted, its text and a link to it on GitHub. */
+  postedCard: (c: PostedComment) => HTMLElement;
   /**
    * One pending comment as a card (Edit reopens the composer in its place, Delete removes it), for
    * drawing under its line. `afterRemove` puts focus somewhere sensible once the card is gone.
@@ -202,7 +208,67 @@ function composer(session: ReviewSession, o: ComposerOptions): HTMLElement {
       o.state.typed = "";
       o.onClose(null);
     },
+    post: (body) => postNow(session, o, { path: o.path, line: span?.end ?? null, ...range, body }),
   });
+}
+
+const refused = (e: unknown): ReviewCommentResult => ({ outcome: "refused", message: message(e) });
+
+/** "Comment": posts it to GitHub now, outside the review; resolves with why not, or null. */
+async function postNow(
+  session: ReviewSession,
+  o: ComposerOptions,
+  comment: CommentRequest,
+): Promise<string | null> {
+  const result = await orca.plugin
+    .request("review.comment", { key: session.key, comment }, { timeoutMs: 120_000 })
+    .catch(refused);
+  if (result.outcome === "refused") return result.message;
+  o.state.typed = "";
+  session.posted = [...session.posted, result.comment];
+  session.announce(`Comment posted on ${commentPlace(comment)}`);
+  o.onClose(null);
+  session.redraw();
+  return null;
+}
+
+/** A comment posted on its own: Posted, where, its text, and the way to it on GitHub. */
+function postedCard(c: PostedComment): HTMLElement {
+  const place = commentPlace(c);
+  const link = c.url
+    ? h(
+        "button",
+        {
+          type: "button",
+          class: "btn sm ghost",
+          "aria-label": `Open the comment on ${place} on GitHub`,
+        },
+        "View on GitHub ↗",
+      )
+    : null;
+  link?.addEventListener("click", () => void orca.shell?.openExternal(c.url));
+  return h(
+    "div",
+    {
+      class: "posted-card",
+      tabindex: "-1",
+      "data-comment": `posted-${c.id}`,
+      "aria-label": `Your posted comment on ${place}`,
+    },
+    h(
+      "div",
+      { class: "row between wrap" },
+      h(
+        "div",
+        { class: "row wrap" },
+        h("strong", { class: "small" }, "Your comment"),
+        h("span", { class: "tag posted" }, "Posted"),
+        c.startLine === undefined ? null : h("span", { class: "muted small" }, place),
+      ),
+      link,
+    ),
+    h("p", { class: "draft-body" }, prose(c.body)),
+  );
 }
 
 /** Pending comments open for editing in place, with the text typed so far. */
@@ -325,6 +391,12 @@ function commentCard(
   );
 }
 
+/** What became of a finding's suggested comment: still open, added to the review, or dismissed. */
+function findingState(session: ReviewSession, f: Finding): "open" | "added" | "dismissed" {
+  if (session.draft.comments.some((c) => c.source === `finding:${f.id}`)) return "added";
+  return session.draft.dismissedFindings.includes(f.id) ? "dismissed" : "open";
+}
+
 /**
  * Loads the draft and builds the review controls; null when the worker has no guide for it.
  * `announce` speaks through the tab's status line (comment added, deleted, where a jump went).
@@ -350,16 +422,15 @@ export async function startReview(
   return {
     finding: (f, o) =>
       f.suggestedComment ? suggestion(session, f, f.suggestedComment, o?.compact === true) : null,
-    findingState: (f) => {
-      if (session.draft.comments.some((c) => c.source === `finding:${f.id}`)) return "added";
-      return session.draft.dismissedFindings.includes(f.id) ? "dismissed" : "open";
-    },
+    findingState: (f) => findingState(session, f),
     openFindings: () => openFindings(session.draft, guide.findings),
     bar: bar.el,
     place: bar.place,
     composer: (o) => composer(session, o),
     comments: (path) => session.draft.comments.filter((c) => c.path === path),
     all: () => session.draft.comments,
+    postedOn: (path) => session.posted.filter((c) => c.path === path),
+    postedCard,
     commentCard: (c, afterRemove) => commentCard(session, editing, c, afterRemove),
     canComment,
     rangeProblem: (path, start, end) => rangeProblem(canComment, path, start, end),

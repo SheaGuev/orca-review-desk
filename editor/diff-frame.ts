@@ -18,6 +18,8 @@ export type DiffFrame = {
   fullToggle: HTMLButtonElement;
   commentFile: HTMLButtonElement;
   openIn: HTMLButtonElement;
+  /** GitHub's Viewed checkbox, or null when the view has no viewed state to show. */
+  viewedBox: HTMLInputElement | null;
   /** Above the rows: notes about the file, whole-file findings and comments. */
   fileBox: HTMLElement;
   /** The rows. */
@@ -34,6 +36,8 @@ type FrameOptions = {
   focused: boolean;
   /** Whether a review is under way, so Comment on file is offered. */
   reviewing: boolean;
+  /** Whether the file gets GitHub's Viewed checkbox. */
+  viewed: boolean;
   lead: readonly (Node | null)[];
   tags: readonly Node[];
 };
@@ -126,6 +130,7 @@ export function buildFrame(o: FrameOptions): DiffFrame {
   const buttons = actionButtons();
   drawFullToggle(buttons.fullToggle, false);
   const parts = body(bodyId, titleId);
+  const viewedBox = o.viewed ? h("input", { type: "checkbox", class: "cbox", disabled: "" }) : null;
   const head = h(
     "header",
     { class: "dv-head" },
@@ -144,6 +149,7 @@ export function buildFrame(o: FrameOptions): DiffFrame {
     h(
       "div",
       { class: "row wrap dv-actions" },
+      viewedBox && h("label", { class: "btn sm dv-viewed" }, viewedBox, "Viewed"),
       o.focused ? buttons.fullToggle : null,
       o.reviewing ? buttons.commentFile : null,
       buttons.openIn,
@@ -156,5 +162,5 @@ export function buildFrame(o: FrameOptions): DiffFrame {
     head,
     parts.scroller,
   );
-  return { el, toggle, pathText, meta, pendingMeta, announce, ...buttons, ...parts };
+  return { el, toggle, pathText, meta, pendingMeta, announce, viewedBox, ...buttons, ...parts };
 }

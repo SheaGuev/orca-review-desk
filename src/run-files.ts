@@ -1,26 +1,24 @@
 // The files an agent reads during a run, written by the worker so no agent needs a shell: the PR's
-// version of each changed file and the diffs left out of the prompt, in `.orca/pr-tour-runs/<pr>/`
+// version of each changed file and the diffs left out of the prompt, in `.orca/pr-review-runs/<pr>/`
 // inside the clone (the agent's working directory). Names are numbers, never the PR's own paths,
 // so a PR's CLAUDE.md or AGENTS.md is never loaded as instructions. Under `.orca/` because Orca's
 // dev watcher reloads a dev plugin on any change outside `.git`, `.orca` and `node_modules`: when
-// the clone is PR Tour's own dev folder, writing anywhere else would reload it and kill the run.
+// the clone is Review Desk's own dev folder, writing anywhere else would reload it and kill the run.
 import { lstat, mkdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FileDiff } from "./diff";
 import { runOk } from "./exec";
 
 export const ORCA = ".orca";
-export const RUNS = `${ORCA}/pr-tour-runs`;
+export const RUNS = `${ORCA}/pr-review-runs`;
 /** Where guides are written to be opened, under `.orca/` for the same reason as runs. */
-export const GUIDES = `${ORCA}/pr-tour`;
-/** Where runs were written before they moved under `.orca/`; removed at worker start. */
-const OLD_RUNS = ".pr-tour/runs";
+export const GUIDES = `${ORCA}/pr-review`;
 
 /** A run's folder, relative to the clone. */
 export const runDir = (pr: number): string => `${RUNS}/${pr}`;
 
 export type RunFiles = {
-  /** The run's folder, relative to the clone: `.orca/pr-tour-runs/<pr>`. */
+  /** The run's folder, relative to the clone: `.orca/pr-review-runs/<pr>`. */
   dir: string;
   /** Each file left out of the prompt, to its prepared diff (relative to the clone). */
   diffs: ReadonlyMap<string, string>;
@@ -135,7 +133,7 @@ export async function writeRunFiles(input: RunFilesInput): Promise<RunFiles> {
   return { dir, diffs, byPrepared, heads: blobs.flatMap((b) => (b ? [b.toString("latin1")] : [])) };
 }
 
-/** Removes one run's folder, and `pr-tour-runs/` once no other run is in it; `.orca/` stays (Orca's). */
+/** Removes one run's folder, and `pr-review-runs/` once no other run is in it; `.orca/` stays (Orca's). */
 export async function removeRunFiles(cwd: string, pr: number): Promise<void> {
   // Through a linked `.orca`, this would delete outside the clone; nothing was written there.
   if (!(await isRealFolder(cwd, ORCA)) || !(await isRealFolder(cwd, RUNS))) return;
@@ -144,18 +142,13 @@ export async function removeRunFiles(cwd: string, pr: number): Promise<void> {
 }
 
 /**
- * Removes every run folder left in these clones, such as by a crash, at today's location and the
- * old `.pr-tour/runs/`; guides and the rest of `.orca/` stay.
+ * Removes every run folder left in these clones, such as by a crash; guides and the rest of
+ * `.orca/` stay. PR Tour's folders are never touched: it may still be installed and using them.
  */
 export async function removeStaleRuns(cwds: readonly string[]): Promise<void> {
   for (const cwd of cwds) {
-    for (const [parent, root] of [
-      [ORCA, RUNS],
-      [".pr-tour", OLD_RUNS],
-    ] as const) {
-      // A link here was not written by PR Tour: leave it and what it points to alone.
-      if ((await isRealFolder(cwd, parent)) && (await isRealFolder(cwd, root)))
-        await rm(join(cwd, root), { recursive: true, force: true });
-    }
+    // A link here was not written by Review Desk: leave it and what it points to alone.
+    if ((await isRealFolder(cwd, ORCA)) && (await isRealFolder(cwd, RUNS)))
+      await rm(join(cwd, RUNS), { recursive: true, force: true });
   }
 }

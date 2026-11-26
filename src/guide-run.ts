@@ -63,7 +63,7 @@ async function write(deps: Deps, key: string): Promise<{ guide: PrGuide; head: s
     clone,
     pr: details,
     settings: state.settings,
-    reviewRequest: t ? t.item.lane : "manual",
+    reviewRequest: t && t.item.lane !== "recent" ? t.item.lane : "manual",
     requestedAt: t ? t.item.requestedAt : null,
     lastViewedCommit: async () => (await store.meta(key)).lastViewedCommit,
     triage: deps.prData.triage,

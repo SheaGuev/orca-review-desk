@@ -17,7 +17,13 @@ export type Settings = {
   skipDrafts: boolean;
   dailyLimit: number;
   extraInstructions: string;
+  recentDays: number;
+  worktreeMode: WorktreeMode;
 };
+
+/** Opening a guide when no worktree is on the PR's branch: ask, always make one, or never. */
+export type WorktreeMode = "ask" | "always" | "never";
+const WORKTREE_MODES: readonly WorktreeMode[] = ["ask", "always", "never"];
 
 /** An agent's id from the table (all of them are in Settings); anything else is Claude Code. */
 export function asHarness(value: unknown): AgentId {
@@ -26,6 +32,8 @@ export function asHarness(value: unknown): AgentId {
 
 const DEFAULT_TEAM_MIN_LINES = 200;
 const DEFAULT_DAILY_LIMIT = 20;
+const DEFAULT_RECENT_DAYS = 14;
+const MAX_RECENT_DAYS = 90;
 
 export function readSettings(s: Readonly<Record<string, unknown>>): Settings {
   return {
@@ -40,6 +48,11 @@ export function readSettings(s: Readonly<Record<string, unknown>>): Settings {
     skipDrafts: s.skipDrafts !== false,
     dailyLimit: typeof s.dailyLimit === "number" ? s.dailyLimit : DEFAULT_DAILY_LIMIT,
     extraInstructions: typeof s.extraInstructions === "string" ? s.extraInstructions : "",
+    recentDays:
+      typeof s.recentDays === "number" && Number.isInteger(s.recentDays)
+        ? Math.min(MAX_RECENT_DAYS, Math.max(1, s.recentDays))
+        : DEFAULT_RECENT_DAYS,
+    worktreeMode: WORKTREE_MODES.find((m) => m === s.worktreeMode) ?? "ask",
   };
 }
 

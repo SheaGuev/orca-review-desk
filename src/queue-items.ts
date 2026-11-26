@@ -22,9 +22,21 @@ export type Found = { hit: SearchHit; lane: Lane; team: string | null };
 /** What an agent run is doing for a PR right now, if anything. */
 export type RunState = "generating" | "queued" | null;
 
+const DAY_MS = 86_400_000;
+
+/**
+ * Open PRs you reviewed and aren't requested on (or the author of), updated in the last `days`:
+ * the ones you'd otherwise re-request yourself on to see again.
+ */
+export function recentQualifier(days: number, now: number): string {
+  const since = new Date(now - days * DAY_MS).toISOString().slice(0, 10);
+  return `reviewed-by:@me -review-requested:@me -author:@me updated:>=${since}`;
+}
+
 /** Every lane's search, GH_AT_ONCE at a time; a PR found by several keeps the first lane, in this order. */
 export async function searchLanes(
-  settings: Pick<Settings, "teams" | "includeAuthored">,
+  settings: Pick<Settings, "teams" | "includeAuthored" | "recentDays">,
+  now = Date.now(),
 ): Promise<Map<string, Found>> {
   const lanes: { qualifier: string; lane: Lane; team: string | null }[] = [
     { qualifier: "user-review-requested:@me", lane: "user", team: null },
@@ -36,6 +48,7 @@ export async function searchLanes(
     ...(settings.includeAuthored
       ? [{ qualifier: "author:@me", lane: "authored" as const, team: null }]
       : []),
+    { qualifier: recentQualifier(settings.recentDays, now), lane: "recent", team: null },
   ];
   const results = await mapLimit(lanes, GH_AT_ONCE, (l) => searchPrs(l.qualifier));
   const found = new Map<string, Found>();
@@ -74,6 +87,7 @@ export function manualReason(
 ): string | null {
   const { lane, details: d } = pr;
   if (!repo.hasClone) return "No local clone in Orca";
+  if (lane === "recent") return "Reviewed already";
   if (repo.optIn !== true)
     return repo.optIn === false ? "Repository turned off" : "Repository not turned on yet";
   if (d.isDraft && settings.skipDrafts) return "Draft";
@@ -119,6 +133,7 @@ export type PrFound = {
   requestedAt: number;
   /** GitHub's author_association; null when unknown or not asked (your own PRs). */
   association: string | null;
+  lastReview: QueueItem["lastReview"];
 };
 
 /** The part of a queue row that comes straight from GitHub and the search that found the PR. */
@@ -142,6 +157,7 @@ function rowBase(pr: PrFound) {
     team: pr.team,
     position: null,
     repoLabel: repo,
+    lastReview: pr.lastReview,
   };
 }
 
@@ -220,6 +236,7 @@ export function savedPr(t: Tracked, association: string | undefined): SavedPr {
     team: i.team,
     ownedFiles: i.ownedFiles,
     manualReason: i.manualReason,
+    lastReview: i.lastReview,
     branch: t.branch,
   };
 }

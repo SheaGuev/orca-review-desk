@@ -22,6 +22,7 @@ import { notice } from "./diff-rows";
 import { h } from "./dom";
 import { tokensFor, type RowTokens } from "./highlight";
 import type { Review } from "./review";
+import type { Viewed } from "./viewed";
 
 export type DiffViewOptions = {
   guide: PrGuide;
@@ -30,6 +31,8 @@ export type DiffViewOptions = {
   openInOrca: (path: string) => void;
   /** A tour stop's ranges: the view opens on those hunks only and offers Full file. */
   focus?: readonly LineRange[] | null;
+  /** Lines to mark in the gutter (a group's focus) without hiding the other hunks. */
+  marks?: readonly LineRange[] | null;
   /**
    * Whether the diff starts open. The path in the header is a toggle either way; a view that starts
    * closed loads its diff only when it is first opened.
@@ -45,6 +48,8 @@ export type DiffViewOptions = {
   tags?: Node[];
   /** A pending comment to scroll to and focus once the diff is drawn (the review bar's ‹ ›). */
   focusComment?: string | null;
+  /** GitHub's Viewed state; leave out for no Viewed checkbox. */
+  viewed?: Viewed | null;
 };
 
 export type DiffView = {
@@ -63,11 +68,13 @@ function emptyView(opts: DiffViewOptions): View {
     guide: opts.guide,
     review: opts.review,
     focus,
+    marks: opts.marks?.length ? opts.marks : null,
     frame: buildFrame({
       variant: opts.variant ?? "card",
       expanded: opts.expanded ?? true,
       focused: focus !== null,
       reviewing: opts.review !== null,
+      viewed: Boolean(opts.viewed),
       lead: opts.lead ?? [],
       tags: opts.tags ?? [],
     }),
@@ -204,6 +211,7 @@ async function show(c: Shown, path: string, line: number | null): Promise<void> 
   const run = ++c.seq;
   reset(v, path);
   drawHeader(v, path);
+  drawViewed(c);
   drawExpanded(c);
   if (!c.expanded) {
     // Closed: nothing to draw yet, so nothing to load.
@@ -224,6 +232,28 @@ async function show(c: Shown, path: string, line: number | null): Promise<void> 
   if (run !== c.seq) return;
   drawLoaded(v, path, loaded, line, tokens);
   if (tokens === null) void colourLate(v, loaded, colours);
+}
+
+/** The Viewed checkbox as GitHub has it for the file shown; disabled until that is known. */
+function drawViewed(c: Shown): void {
+  const box = c.v.frame.viewedBox;
+  const state = c.v.current === null ? null : (c.opts.viewed?.has(c.v.current) ?? null);
+  if (!box) return;
+  box.checked = state === true;
+  box.disabled = state === null;
+}
+
+/** Ticking Viewed closes the file, as on GitHub; unticking leaves it as it is. */
+function wireViewed(c: Shown): (() => void) | undefined {
+  const { viewedBox } = c.v.frame;
+  const viewed = c.opts.viewed;
+  if (!viewedBox || !viewed) return undefined;
+  viewedBox.addEventListener("change", () => {
+    if (c.v.current === null) return;
+    viewed.set(c.v.current, viewedBox.checked);
+    if (viewedBox.checked) setExpanded(c, false);
+  });
+  return viewed.onChange(() => drawViewed(c));
 }
 
 /** The header's toggle and actions, and the rows' comment buttons. */
@@ -253,6 +283,7 @@ export function createDiffView(opts: DiffViewOptions): DiffView {
   drawExpanded(c);
   wire(c);
   const unsubscribe = v.review?.onChange(() => drawNotes(v));
+  const unsubscribeViewed = wireViewed(c);
   return {
     el: v.frame.el,
     show: (path, line) => show(c, path, line ?? null),
@@ -260,6 +291,7 @@ export function createDiffView(opts: DiffViewOptions): DiffView {
     dispose: () => {
       c.seq++;
       unsubscribe?.();
+      unsubscribeViewed?.();
     },
   };
 }

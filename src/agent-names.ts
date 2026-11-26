@@ -1,4 +1,4 @@
-// What a person sees of each agent PR Tour can run: its name, and whether it reports the files it
+// What a person sees of each agent Review Desk can run: its name, and whether it reports the files it
 // opened. No Node imports, so the editor frame can read it too; `src/agent.ts` adds how each runs.
 
 export type AgentNames = {
@@ -8,7 +8,7 @@ export type AgentNames = {
   toolEvents: boolean;
 };
 
-/** Every agent PR Tour can run, in the order Settings lists them. */
+/** Every agent Review Desk can run, in the order Settings lists them. */
 export const AGENT_IDS = [
   "claude",
   "codex",
@@ -33,7 +33,7 @@ export const AGENT_NAMES: Record<AgentId, AgentNames> = {
   pi: { label: "Pi", toolEvents: false },
 };
 
-/** The agent a guide's `generatedBy.harness` names, or null for one PR Tour does not know. */
+/** The agent a guide's `generatedBy.harness` names, or null for one Review Desk does not know. */
 export function agentNames(harness: string): AgentNames | null {
   const id = AGENT_IDS.find((a) => a === harness);
   return id ? AGENT_NAMES[id] : null;

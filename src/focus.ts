@@ -69,7 +69,9 @@ async function showStatusBar(f: Focused): Promise<void> {
     const bar = statusBar({
       focused: pr ? trackedFor(state, pr.repo, pr.branch)?.item : undefined,
       onRepo: pr !== null,
-      waiting: [...state.tracked.values()].filter((t) => t.item.lane !== "authored").length,
+      waiting: [...state.tracked.values()].filter(
+        (t) => t.item.lane === "user" || t.item.lane === "team",
+      ).length,
     });
     const next = JSON.stringify(bar);
     if (next === f.shown) return;

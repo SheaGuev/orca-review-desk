@@ -3,6 +3,8 @@ import { message } from "./errors";
 import { runOk } from "./exec";
 import { asObj, asString, parseJson } from "./json";
 import {
+  commentPayload,
+  emptyDraft,
   fileCommentPayloads,
   reviewPayload,
   type Draft,
@@ -81,4 +83,24 @@ export async function postReview(input: {
     }
   }
   return { url, notPosted };
+}
+
+/**
+ * Posts one comment on its own, outside any review: on a line or range of the PR head, or on the
+ * whole file. Throws when it holds what looks like a secret (nothing is posted) or GitHub refuses.
+ */
+export async function postComment(input: {
+  repo: string;
+  number: number;
+  comment: DraftComment;
+  head: string;
+  known: () => Promise<string>;
+}): Promise<{ id: string; url: string }> {
+  const { repo, number, comment, head } = input;
+  await refuseSecrets("", { ...emptyDraft(head), comments: [comment] }, input.known);
+  const out = asObj(
+    parseJson(await post(`repos/${repo}/pulls/${number}/comments`, commentPayload(comment, head))),
+  );
+  const id = typeof out.id === "number" || typeof out.id === "string" ? String(out.id) : "";
+  return { id, url: asString(out.html_url) };
 }

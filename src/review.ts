@@ -201,6 +201,60 @@ export function fileCommentPayloads(
     }));
 }
 
+/** A comment posted on its own from the guide tab, outside any review; kept to draw it as posted. */
+export type PostedComment = {
+  /** GitHub's id for the comment. */
+  id: string;
+  path: string;
+  /** PR-head line it sits on (the last of a range); null for the whole file. */
+  line: number | null;
+  startLine?: number;
+  body: string;
+  /** The comment's page on GitHub. */
+  url: string;
+  /** When it was posted, in ms. */
+  at: number;
+};
+
+/** Posted comments from storage, anything malformed dropped. */
+export function asPostedComments(value: unknown): PostedComment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((c): PostedComment[] => {
+    if (!isObj(c)) return [];
+    const { id, path, line, startLine, body, url, at } = c;
+    if (typeof id !== "string" || typeof path !== "string" || !path) return [];
+    if (typeof body !== "string" || typeof url !== "string" || typeof at !== "number") return [];
+    if (!(line === null || (typeof line === "number" && Number.isInteger(line) && line > 0)))
+      return [];
+    const range =
+      typeof startLine === "number" && typeof line === "number" && startLine < line
+        ? { startLine }
+        : {};
+    return [{ id, path, line, ...range, body, url, at }];
+  });
+}
+
+export type LineCommentPayload = ReviewPayload["comments"][number] & { commit_id: string };
+
+/** What GitHub is sent to post one comment on its own: on a line or range, or the whole file. */
+export function commentPayload(
+  c: Pick<DraftComment, "path" | "line" | "startLine" | "body">,
+  commitId: string,
+): LineCommentPayload | FileCommentPayload {
+  const body = c.body.trim();
+  if (c.line === null) return { commit_id: commitId, path: c.path, body, subject_type: "file" };
+  return {
+    commit_id: commitId,
+    path: c.path,
+    line: c.line,
+    side: "RIGHT",
+    ...(c.startLine !== undefined && c.startLine < c.line
+      ? { start_line: c.startLine, start_side: "RIGHT" as const }
+      : {}),
+    body,
+  };
+}
+
 /** "One thing" / "3 things": a count in words that read well at the start of a sentence too. */
 const count = (n: number, one: string, many: string): string => (n === 1 ? one : `${n} ${many}`);
 

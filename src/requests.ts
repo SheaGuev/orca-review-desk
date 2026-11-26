@@ -1,12 +1,13 @@
 // The requests the panel and the guide tab make of the worker, and the commands in Orca's
 // palette. Inputs come from frames, so each is checked here before anything acts on it.
 import type { OrcaWorkerApi } from "orca/worker";
-import { fail, isCommit, optionalCommit } from "./errors";
+import { fail, isCommit, message, optionalCommit } from "./errors";
 import type { Focus } from "./focus";
+import { setFileViewed, viewedFiles, type ViewedFiles } from "./github";
 import { isObj } from "./json";
 import type { Opener } from "./open-guide";
 import type { PrData } from "./pr-data";
-import type { QueueState } from "./protocol";
+import type { CommentRequest, OpenResult, QueueState, WorktreeChoice } from "./protocol";
 import { prKey } from "./repo";
 import { asDraft, REVIEW_EVENTS, type ReviewEvent } from "./review";
 import type { ReviewService } from "./review-service";
@@ -30,8 +31,11 @@ export type WorkerApi = {
   refresh: () => Promise<void>;
   /** The stored guide for `key`; throws `unavailable` when there is none. */
   requireGuide: (key: string) => Promise<StoredGuide>;
-  /** Opens the stored guide for `key` and records that the person saw it. */
-  openGuide: (key: string) => Promise<void>;
+  /**
+   * Opens the stored guide for `key` and records that the person saw it. From the panel it may
+   * ask about a worktree instead ("may-ask") or act on the answer; without a choice it never asks.
+   */
+  openGuide: (key: string, choice?: WorktreeChoice | "may-ask") => Promise<OpenResult>;
   /** The focused branch's PR, tracked if it is in the queue, else looked up for a manual run. */
   focusedKey: () => Promise<string>;
   /** Queues a run whose guide opens when it is written. */
@@ -103,6 +107,56 @@ function registerGuideData(orca: OrcaWorkerApi, api: WorkerApi): void {
   });
 }
 
+/** A GitHub call's failure as a request error the guide tab can show. */
+async function fromGitHub<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    throw fail("unavailable", `GitHub: ${message(e)}`);
+  }
+}
+
+/** GitHub's Viewed checkbox per file, read and set through `gh` as the person. */
+function registerViewed(orca: OrcaWorkerApi, api: WorkerApi): void {
+  // The PR's node id from the last read, so ticking a box costs one call.
+  const prIds = new Map<string, string>();
+  const read = async (key: string): Promise<ViewedFiles> => {
+    const { pr } = await api.requireGuide(key);
+    const files = await fromGitHub(() => viewedFiles(pr.repo, pr.number));
+    prIds.set(key, files.prId);
+    return files;
+  };
+  orca.panels.handle("viewed.get", async ({ key }) => ({ viewed: (await read(key)).viewed }));
+  orca.panels.handle("viewed.set", async ({ key, path, viewed }) => {
+    if (typeof path !== "string" || !path || path.includes("\0"))
+      throw fail("invalid", "Expected a file path");
+    if (typeof viewed !== "boolean") throw fail("invalid", "Expected viewed to be true or false");
+    const prId = prIds.get(key) ?? (await read(key)).prId;
+    await fromGitHub(() => setFileViewed(prId, path, viewed));
+    return { viewed };
+  });
+}
+
+/** The comment a guide tab asks to post, checked: a path, a line or none, an optional range start. */
+function asCommentRequest(value: unknown): CommentRequest {
+  if (!isObj(value)) throw fail("invalid", "Expected a comment");
+  const { path, line, startLine, body } = value;
+  if (typeof path !== "string" || !path || path.includes("\0"))
+    throw fail("invalid", "Expected a file path");
+  if (typeof body !== "string" || !body.trim()) throw fail("invalid", "The comment is empty");
+  const lineOk = line === null || (typeof line === "number" && Number.isInteger(line) && line > 0);
+  if (!lineOk) throw fail("invalid", "Expected a line number or null");
+  if (startLine === undefined || line === null) return { path, line, body };
+  if (
+    typeof startLine !== "number" ||
+    !Number.isInteger(startLine) ||
+    startLine < 1 ||
+    startLine >= line
+  )
+    throw fail("invalid", "Expected the range to start above its last line");
+  return { path, line, startLine, body };
+}
+
 function registerReview(orca: OrcaWorkerApi, api: WorkerApi): void {
   const { reviews } = api;
   const tour = tourRequests(api);
@@ -116,6 +170,9 @@ function registerReview(orca: OrcaWorkerApi, api: WorkerApi): void {
     if (!isReviewEvent(event)) throw fail("invalid", "Unknown review event");
     return reviews.submit(key, event, typeof body === "string" ? body : "");
   });
+  orca.panels.handle("review.comment", ({ key, comment }) =>
+    reviews.comment(key, asCommentRequest(comment)),
+  );
   orca.panels.handle("tour.get", ({ key, commit, stops }) => tour.get(key, commit, stops));
   orca.panels.handle("tour.save", async ({ key, state }) => {
     await tour.save(key, state);
@@ -148,9 +205,10 @@ function registerQueue(orca: OrcaWorkerApi, api: WorkerApi): void {
     api.runs.enqueue(key, false);
     return api.queueState();
   });
-  orca.panels.handle("guide.open", async ({ key }) => {
-    await api.openGuide(key);
-    return { opened: true };
+  orca.panels.handle("guide.open", ({ key, worktree }) => {
+    if (worktree !== undefined && worktree !== "create" && worktree !== "skip")
+      throw fail("invalid", "Expected worktree to be create or skip");
+    return api.openGuide(key, worktree ?? "may-ask");
   });
 }
 
@@ -182,6 +240,7 @@ export function registerRequests(orca: OrcaWorkerApi, api: WorkerApi): void {
   registerQueue(orca, api);
   registerReview(orca, api);
   registerGuideData(orca, api);
+  registerViewed(orca, api);
   registerCommands(orca, api);
   orca.events.on("workspace.changed", ({ context }) => {
     api.focus.set(context ? { workspaceId: context.workspaceId, branch: context.branch } : null);

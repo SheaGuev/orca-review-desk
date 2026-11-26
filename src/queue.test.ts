@@ -29,6 +29,7 @@ const item = (over: Partial<QueueItem>): QueueItem => ({
   repoLabel: "",
   tour: null,
   pendingComments: 0,
+  lastReview: null,
   ...over,
 });
 

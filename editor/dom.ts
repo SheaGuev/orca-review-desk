@@ -24,3 +24,21 @@ export function prose(text: string): DocumentFragment {
   });
   return out;
 }
+
+/** A path's folders (with the trailing slash) and its file name, so a row can shorten the folders. */
+export function splitPath(path: string): [string, string] {
+  const at = path.lastIndexOf("/") + 1;
+  return [path.slice(0, at), path.slice(at)];
+}
+
+/**
+ * A file name's stem and the suffix that tells it apart: `.test.ts` for a test beside its source,
+ * else the last extension. A row shortens the stem and always shows the suffix.
+ */
+export function splitName(name: string): [string, string] {
+  const first = name.indexOf(".", 1);
+  if (first < 0) return [name, ""];
+  const last = name.lastIndexOf(".");
+  const at = name.length - first <= 14 ? first : last;
+  return [name.slice(0, at), name.slice(at)];
+}

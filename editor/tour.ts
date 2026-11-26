@@ -33,7 +33,10 @@ import {
   type TourView,
 } from "../src/tour";
 import { changesSection } from "./changes";
-import { createDiffView } from "./diff-view";
+import { createDiffView, type DiffView } from "./diff-view";
+import { isTestPath, spyOnCards, whenNear } from "./group";
+import { markRailFile, rail, type LineCounts } from "./rail";
+import { railResizer, railToggle } from "./rail-layout";
 import { h, prose } from "./dom";
 import {
   basename,
@@ -55,6 +58,7 @@ import {
   SKIP_LABEL,
 } from "./parts";
 import type { Review } from "./review";
+import type { Viewed } from "./viewed";
 
 /**
  * Where focus goes after a move: the new view's heading, the control that made the move, the
@@ -89,6 +93,8 @@ export type TourContext = {
   setCollapsed: (index: number, collapsed: boolean) => void;
   restart: () => void;
   load: (path: string) => Promise<DiffFile>;
+  /** GitHub's Viewed checkbox per file. */
+  viewed: Viewed;
   /** The PR's files by kind, for the overview's Changes; asked once per tab, again after a failure. */
   breakdown: () => Promise<Breakdown>;
   openInOrca: (path: string) => void;
@@ -131,6 +137,7 @@ function fileRow(
   const view = createDiffView({
     guide: ctx.guide,
     load: ctx.load,
+    viewed: ctx.viewed,
     review: ctx.review,
     openInOrca: ctx.openInOrca,
     variant: "listed",
@@ -142,7 +149,7 @@ function fileRow(
   ctx.track(() => view.dispose());
   if (target) view.el.classList.add("is-target");
   void view.show(path, line ?? null);
-  return h("li", {}, view.el);
+  return h("li", { class: "group-file", "data-path": path }, view.el);
 }
 
 /** The files changed since the reviewer's last look, for marking the tour's stops. */
@@ -628,7 +635,7 @@ function overview(ctx: TourContext): HTMLElement {
       ? h(
           "div",
           { class: "banner", role: "note" },
-          h("strong", {}, "Made by an older version of PR Tour."),
+          h("strong", {}, "Made by an older guide format."),
           " It has no findings or file notes. ",
           ctx.regenerate("Regenerate"),
         )
@@ -941,6 +948,7 @@ function topBar(ctx: TourContext, here: Here): HTMLElement {
   return h(
     "div",
     { class: "topbar" },
+    railToggle(),
     exitButton(ctx),
     h("p", { class: "topbar-label" }, label),
     stepMenu(ctx, here, label),
@@ -964,50 +972,148 @@ function topBar(ctx: TourContext, here: Here): HTMLElement {
 }
 
 function shell(ctx: TourContext, here: Here, body: HTMLElement): HTMLElement {
+  const nav = h(
+    "nav",
+    { class: "rail", id: "tour-rail", "aria-label": "Tour groups and files" },
+    h("div", { class: "rail-scroll" }, railFor(ctx, here)),
+  );
+  nav.append(railResizer(nav));
   return h(
     "div",
     { class: "tour" },
-    h("nav", { class: "rail", "aria-label": "Tour stops" }, steps(ctx, here)),
+    nav,
     h("div", { class: "tour-main" }, topBar(ctx, here), body, ctx.notice),
   );
 }
 
-/**
- * The files of a stop after its first. A skim stop's make the same change: closed, each opens to
- * its whole diff.
- */
-function otherFiles(ctx: TourContext, s: Stop, others: readonly string[]): HTMLElement | null {
-  if (!others.length) return null;
-  const { target } = ctx;
-  const notes = new Map(ctx.guide.files.map((f) => [f.path, f.note]));
-  return h(
-    "section",
-    { class: "section", "aria-labelledby": "others-h" },
-    h(
-      "h3",
-      { id: "others-h" },
-      s.depth === "skim"
-        ? `Same change in ${plural(others.length, "more file")}`
-        : `Also in this stop · ${plural(others.length, "file")}`,
-    ),
-    h(
-      "ul",
-      { class: "file-rows" },
-      ...others.map((path) => {
-        const note = notes.get(path);
-        const tags = severityTags(findingsIn(ctx.guide, [path]));
-        return fileRow(
-          ctx,
-          path,
-          [
-            tags.length ? h("div", { class: "row wrap" }, ...tags) : null,
-            note ? h("p", { class: "muted small measure" }, prose(note)) : null,
-          ],
-          target?.file === path ? target.line : undefined,
-        );
-      }),
-    ),
+/** Each changed file's added and removed line counts, for the rail; empty when unknown. */
+const lineCounts = (ctx: TourContext): Promise<LineCounts> =>
+  ctx
+    .breakdown()
+    .then((b) => {
+      const files = b.categories.flatMap((c) => c.files);
+      return new Map(
+        files.map((f) => [f.path, { additions: f.additions, deletions: f.deletions }]),
+      );
+    })
+    .catch(() => new Map());
+
+/** Scrolls to `path`'s card on this page, opening it; false when the page has none. */
+function scrollToCard(path: string): boolean {
+  const card = Array.from(document.querySelectorAll<HTMLElement>(".group-file")).find(
+    (c) => c.dataset.path === path,
   );
+  const toggle = card?.querySelector<HTMLButtonElement>(".dv-toggle");
+  if (!card || !toggle) return false;
+  if (toggle.getAttribute("aria-expanded") === "false") toggle.click();
+  card.scrollIntoView({ block: "start" });
+  toggle.focus({ preventScroll: true });
+  return true;
+}
+
+function railFor(ctx: TourContext, here: Here): HTMLElement {
+  const groups = [
+    ...ctx.stops.map((s) => ({
+      title: s.title ?? basename(s.files[0] ?? ""),
+      files: s.files,
+      flagged: findingsIn(ctx.guide, s.files).length > 0,
+    })),
+    ...(ctx.skipped.length
+      ? [{ title: SKIP_TITLE, files: ctx.skipped.map((f) => f.path), flagged: false }]
+      : []),
+  ];
+  const at = here.kind === "stop" ? here.index : null;
+  return rail({
+    groups,
+    current: at,
+    seen: ctx.state.visited,
+    atWrapUp: here.kind === "wrapup",
+    finishLabel: FINISH,
+    skipped: new Map(ctx.skipped.map((f) => [f.path, SKIP_LABEL[f.reason]])),
+    viewed: ctx.viewed,
+    counts: lineCounts(ctx),
+    pending: () => pendingByStop(ctx.lookup, ctx.review?.all() ?? []),
+    onPendingChange: (listener) => ctx.review?.onChange(listener) ?? (() => undefined),
+    goGroup: (i) => ctx.go(stopView(i)),
+    goFile: (i, path) => {
+      if (i !== at || !scrollToCard(path)) ctx.go(stopView(i), "file", { file: path, line: null });
+    },
+    goOverview: () => ctx.go("overview"),
+    goWrapUp: () => ctx.go("wrapup"),
+    track: ctx.track,
+  });
+}
+
+/** Cards drawn and loaded at once; the rest open as they scroll near. */
+const EAGER_CARDS = 4;
+
+/** A file's severity tags and note, under its path. */
+function cardLead(ctx: TourContext, path: string): (Node | null)[] {
+  const note = ctx.guide.files.find((f) => f.path === path)?.note;
+  const tags = severityTags(findingsIn(ctx.guide, [path]));
+  return [
+    tags.length ? h("div", { class: "row wrap" }, ...tags) : null,
+    note ? h("p", { class: "muted small measure" }, prose(note)) : null,
+  ];
+}
+
+/** "Test files start closed · Show diff", hidden once the card is open. */
+function testHint(view: () => DiffView | null): HTMLElement {
+  const show = h("button", { type: "button", class: "link" }, "Show diff");
+  show.addEventListener("click", () => view()?.toggle.click());
+  return h("p", { class: "test-hint muted small" }, "Test files start closed · ", show);
+}
+
+type Card = { index: number; k: number; path: string; focus: Stop["focus"] };
+
+/**
+ * One file of a group as a diff card. The first file carries the stop's open or closed state and
+ * the agent's focus lines (marked, not filtered); test files start closed.
+ */
+function fileCard(ctx: TourContext, c: Card): HTMLElement {
+  const target = ctx.target?.file === c.path ? ctx.target : null;
+  const primary = c.k === 0;
+  const remembered = primary && ctx.state.collapsed.includes(c.index);
+  if (remembered && target) ctx.setCollapsed(c.index, false);
+  const test = isTestPath(c.path);
+  const open = target !== null || (!test && !(remembered && !target));
+  const eager = target !== null || c.k < EAGER_CARDS;
+  let made: DiffView | null = null;
+  const view = createDiffView({
+    guide: ctx.guide,
+    load: ctx.load,
+    viewed: ctx.viewed,
+    review: ctx.review,
+    openInOrca: ctx.openInOrca,
+    marks: primary ? (c.focus ?? null) : null,
+    expanded: open && eager,
+    onToggle: primary ? (o) => ctx.setCollapsed(c.index, !o) : undefined,
+    lead: [...cardLead(ctx, c.path), test ? testHint(() => made) : null],
+    focusComment: target?.commentId ?? null,
+  });
+  made = view;
+  ctx.track(() => view.dispose());
+  void view.show(c.path, target?.line ?? null);
+  const li = h("li", { class: "group-file", "data-path": c.path }, view.el);
+  if (target) li.classList.add("is-target");
+  if (open && !eager)
+    ctx.track(
+      whenNear(li, () => {
+        if (view.toggle.getAttribute("aria-expanded") === "false") view.toggle.click();
+      }),
+    );
+  return li;
+}
+
+/** Every file of a group, stacked as diff cards; the rail marks the one on screen. */
+function groupCards(ctx: TourContext, s: Stop, index: number): HTMLElement {
+  const list = h(
+    "ul",
+    { class: "group-files", "aria-label": plural(s.files.length, "file") },
+    ...s.files.map((path, k) => fileCard(ctx, { index, k, path, focus: s.focus })),
+  );
+  ctx.track(spyOnCards(list, markRailFile));
+  return list;
 }
 
 /** The top bar says how many files are covered; this says what is left, and where. */
@@ -1102,29 +1208,10 @@ function toHandle(ctx: TourContext, review: Review): HTMLElement | null {
   return box;
 }
 
-/** A deep or skim stop: the explanation, the first file's focused hunks, then its other files. */
+/** A group: the explanation, then every one of its files as a diff card. */
 function stopPage(ctx: TourContext, index: number): HTMLElement {
   const s = ctx.stops[index];
-  const [primary, ...others] = s?.files ?? [];
-  if (isSkip(ctx, index) || !s || primary === undefined) return skippedStop(ctx, index);
-  const target = ctx.target;
-  // A finding's file:line opens the file at that line, even if the reviewer had closed it here.
-  const line = target?.file === primary ? target.line : null;
-  const closed = ctx.state.collapsed.includes(index) && target?.file !== primary;
-  if (!closed && ctx.state.collapsed.includes(index)) ctx.setCollapsed(index, false);
-  const diff = createDiffView({
-    guide: ctx.guide,
-    load: ctx.load,
-    review: ctx.review,
-    openInOrca: ctx.openInOrca,
-    focus: s.focus ?? null,
-    expanded: !closed,
-    onToggle: (open) => ctx.setCollapsed(index, !open),
-    focusComment: target?.file === primary ? target.commentId : null,
-  });
-  ctx.track(() => diff.dispose());
-  void diff.show(primary, line);
-  const rest = otherFiles(ctx, s, others);
+  if (isSkip(ctx, index) || !s?.files.length) return skippedStop(ctx, index);
   const body = h(
     "article",
     { class: "stop", "aria-labelledby": "stop-h" },
@@ -1147,8 +1234,7 @@ function stopPage(ctx: TourContext, index: number): HTMLElement {
     s.check?.trim()
       ? h("p", { class: "measure check-q" }, h("strong", {}, "Check: "), prose(s.check))
       : null,
-    diff.el,
-    rest,
+    groupCards(ctx, s, index),
   );
   return shell(ctx, { kind: "stop", index }, body);
 }

@@ -1,4 +1,5 @@
 // Runs the real worker against a mock Orca host, with git, gh and the agent CLI faked.
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,6 +65,16 @@ function fakeTools(opts: {
   inFlight?: { now: number; max: number };
   /** The clone's origin URL; git@github.com:old-owner/api.git when left out. */
   origin?: string;
+  /** Files ticked Viewed on GitHub, one list per page of the files query; one page when left out. */
+  viewedPages?: string[][];
+  /** GitHub refuses ticking or unticking Viewed. */
+  refuseViewed?: boolean;
+  /** PR numbers the Recently reviewed search finds; none when left out. */
+  reviewedNumbers?: number[];
+  /** Your reviews per PR number, as the reviews endpoint's jq filter prints them. */
+  myReviews?: Record<number, { submitted_at: string; commit_id: string }[]>;
+  /** The PR's branch is in a fork. */
+  fromFork?: boolean;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -135,29 +146,46 @@ function fakeTools(opts: {
     if (cmd === "git") return ok("");
     if (cmd === "gh" && args[0] === "api" && args.includes("search/issues")) {
       const q = args.find((a) => a.startsWith("q=")) ?? "";
-      const hits = (opts.numbers ?? [7]).map((number) => ({
-        number,
-        title: PR_VIEW.title,
-        html_url: PR_VIEW.url,
-        draft: false,
-        updated_at: opts.updatedAt?.[number] ?? "2026-11-19T00:00:00Z",
-        user: { login: "sam" },
-        repository_url: "https://api.github.com/repos/acme/api",
-        // GitHub's search results carry it; null leaves it out, as an older answer would.
-        ...(opts.association === null ? {} : { author_association: opts.association ?? "MEMBER" }),
-      }));
+      const reviewed = q.includes("reviewed-by:@me");
+      const hits = ((reviewed ? opts.reviewedNumbers : opts.numbers) ?? (reviewed ? [] : [7])).map(
+        (number) => ({
+          number,
+          title: PR_VIEW.title,
+          html_url: PR_VIEW.url,
+          draft: false,
+          updated_at: opts.updatedAt?.[number] ?? "2026-11-19T00:00:00Z",
+          user: { login: "sam" },
+          repository_url: "https://api.github.com/repos/acme/api",
+          // GitHub's search results carry it; null leaves it out, as an older answer would.
+          ...(opts.association === null
+            ? {}
+            : { author_association: opts.association ?? "MEMBER" }),
+        }),
+      );
       return ok(
         JSON.stringify({
-          items: q.includes("user-review-requested") && opts.reviewRequested !== false ? hits : [],
+          items:
+            reviewed || (q.includes("user-review-requested") && opts.reviewRequested !== false)
+              ? hits
+              : [],
         }),
       );
     }
+    const reviews = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(args[2] ?? "");
+    if (cmd === "gh" && args[0] === "api" && args[1] === "--paginate" && reviews)
+      return ok(
+        (opts.myReviews?.[Number(reviews[1])] ?? []).map((r) => JSON.stringify(r)).join("\n"),
+      );
     if (cmd === "gh" && args[0] === "pr" && args[1] === "view") {
       const number = Number(args[2]);
       return ok(
         JSON.stringify(
           number === 7
-            ? { ...PR_VIEW, author: { login: opts.author ?? "sam" } }
+            ? {
+                ...PR_VIEW,
+                author: { login: opts.author ?? "sam" },
+                isCrossRepository: opts.fromFork === true,
+              }
             : { ...PR_VIEW, number, headRefOid: `head${number}`, url: `${PR_VIEW.url}/${number}` },
         ),
       );
@@ -180,7 +208,38 @@ function fakeTools(opts: {
       const body = JSON.parse(options?.input ?? "{}") as { path?: string };
       if (opts.refuseFileComments?.includes(body.path ?? ""))
         return { stdout: "", stderr: "gh: Validation Failed (HTTP 422)", code: 1 };
-      return ok("{}");
+      return ok(
+        JSON.stringify({ id: 101, html_url: "https://github.com/acme/api/pull/7#discussion_r101" }),
+      );
+    }
+    if (
+      cmd === "gh" &&
+      args[0] === "api" &&
+      args[1] === "graphql" &&
+      args.join(" ").includes("Viewed(")
+    ) {
+      if (opts.refuseViewed)
+        return { stdout: "", stderr: "GraphQL: Resource not accessible by integration", code: 1 };
+      return ok(JSON.stringify({ data: {} }));
+    }
+    if (
+      cmd === "gh" &&
+      args[0] === "api" &&
+      args[1] === "graphql" &&
+      args.join(" ").includes("viewerViewedState")
+    ) {
+      const pages = opts.viewedPages ?? [["README.md"]];
+      const at = Number(args.find((a) => a.startsWith("after="))?.slice(6) ?? 0);
+      const nodes = [
+        ...(pages[at] ?? []).map((path) => ({ path, viewerViewedState: "VIEWED" })),
+        { path: `changed-${at}.ts`, viewerViewedState: "DISMISSED" },
+      ];
+      const pageInfo = { hasNextPage: at + 1 < pages.length, endCursor: String(at + 1) };
+      return ok(
+        JSON.stringify({
+          data: { repository: { pullRequest: { id: "PR_7", files: { nodes, pageInfo } } } },
+        }),
+      );
     }
     if (cmd === "gh" && args[0] === "api" && args[1] === "graphql") {
       const repository: Record<string, unknown> = {};
@@ -289,6 +348,12 @@ async function setup(
     limit?: { on: boolean; reset: number };
     inFlight?: { now: number; max: number };
     origin?: string;
+    viewedPages?: string[][];
+    refuseViewed?: boolean;
+    reviewRequested?: boolean;
+    reviewedNumbers?: number[];
+    myReviews?: Record<number, { submitted_at: string; commit_id: string }[]>;
+    fromFork?: boolean;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -349,6 +414,45 @@ test("lists a requested review and waits for the repository to be turned on", as
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 0, "no agent run before opt-in");
 });
 
+test("a PR you reviewed and aren't requested on lists as Recently reviewed, and Generate takes it", async () => {
+  const { worker, calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    reviewRequested: false,
+    reviewedNumbers: [7],
+    myReviews: {
+      7: [
+        { submitted_at: "2026-11-25T10:00:00Z", commit_id: "older-head" },
+        { submitted_at: "2026-11-20T10:00:00Z", commit_id: PR_VIEW.headRefOid },
+      ],
+    },
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  const state = latest() as QueueState;
+  assert.equal(state.queue.length + state.notQueued.length, 0, "not a review you owe");
+  assert.deepEqual(state.repos, [], "it asks nobody to turn the repository on");
+  const row = state.recent[0];
+  assert.equal(row?.key, "acme/api#7");
+  assert.equal(row?.lane, "recent");
+  assert.equal(row?.manualReason, "Reviewed already");
+  assert.deepEqual(
+    row?.lastReview,
+    { at: Date.parse("2026-11-25T10:00:00Z"), newCommits: true },
+    "the latest review counts, and the head moved since it",
+  );
+  const q = calls
+    .flatMap((c) => c.args)
+    .find((a) => a.startsWith("q=") && a.includes("reviewed-by:@me"));
+  assert.match(
+    q ?? "",
+    /reviewed-by:@me -review-requested:@me -author:@me updated:>=\d{4}-\d{2}-\d{2}$/,
+  );
+  assert.equal(calls.filter((c) => c.cmd === "claude").length, 0, "no automatic run");
+
+  await worker.request("guide.generate", { key: "acme/api#7" });
+  await until(() => latest()?.recent[0]?.status === "ready", "the guide");
+  const { host } = { host: current };
+  void host;
+});
+
 test("turning a repository on writes the guide with worker-filled facts", async () => {
   const { host, worker, calls, latest, all } = await setup([JSON.stringify(AGENT_GUIDE)]);
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
@@ -387,7 +491,7 @@ test("turning a repository on writes the guide with worker-filled facts", async 
   );
   assert.ok(agent.options?.input?.includes("<diff>"), "diff goes in the prompt");
   assert.ok(
-    calls.some((c) => c.cmd === "git" && c.args.includes("+refs/pull/7/head:refs/pr-tour/pr-7")),
+    calls.some((c) => c.cmd === "git" && c.args.includes("+refs/pull/7/head:refs/pr-review/pr-7")),
   );
   assert.equal(host.callsOf("notifications.show").length, 1);
 });
@@ -418,28 +522,157 @@ test("Review opens the guide file in the repo workspace and remembers what you s
     "optin:acme/api": true,
   });
   await until(() => all()[0]?.status === "ready", "the guide");
-  // Guides written where older versions put them are replaced, not left beside the new one.
+  // PR Tour's guides are its own: Review Desk writes beside them and never touches them.
   await mkdir(join(dir, ".pr-tour"), { recursive: true });
   await writeFile(join(dir, ".pr-tour/7.prtour.json"), "{}");
   await writeFile(join(dir, ".pr-tour/pr-7.prtour.json"), "{}");
-  assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), { opened: true });
+  // No worktree is on the PR's branch, so the panel is asked first; Open without opens in the clone.
+  assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), {
+    opened: false,
+    ask: { branch: PR_VIEW.headRefName },
+  });
+  assert.equal(host.callsOf("editor.open").length, 0, "nothing opens while the question is open");
+  assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7", worktree: "skip" }), {
+    opened: true,
+    notes: [],
+  });
 
-  // Under .orca/, which Orca's dev watcher skips, so opening a guide of PR Tour's own repo
+  // Under .orca/, which Orca's dev watcher skips, so opening a guide of Review Desk's own repo
   // does not reload the dev plugin. "pr-7": the tab is named after the file.
   assert.deepEqual(host.callsOf("editor.open").at(-1), {
     workspaceId: "w1",
-    path: ".orca/pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-review/pr-7.prreview.json",
   });
-  assert.ok(!(await readdir(dir)).includes(".pr-tour"), "the old folder and its guides are gone");
-  const written = JSON.parse(await readFile(join(dir, ".orca/pr-tour/pr-7.prtour.json"), "utf8"));
+  assert.deepEqual(
+    (await readdir(join(dir, ".pr-tour"))).sort(),
+    ["7.prtour.json", "pr-7.prtour.json"],
+    "PR Tour's guides are left as they were",
+  );
+  const written = JSON.parse(
+    await readFile(join(dir, ".orca/pr-review/pr-7.prreview.json"), "utf8"),
+  );
   assert.equal(written.pr.number, 7);
   const exclude = await readFile(join(dir, ".git/info/exclude"), "utf8");
-  assert.ok(exclude.includes(".orca/pr-tour/"), "the guide folder stays out of git status");
-  assert.ok(exclude.includes(".orca/pr-tour-runs/"), "run files stay out of git status");
+  assert.ok(exclude.includes(".orca/pr-review/"), "the guide folder stays out of git status");
+  assert.ok(exclude.includes(".orca/pr-review-runs/"), "run files stay out of git status");
   assert.equal(
     (host.data().storage["meta:acme/api#7"] as { lastViewedCommit?: string }).lastViewedCommit,
     PR_VIEW.headRefOid,
   );
+});
+
+/** The clone's workspace as Orca lists it, and a worktree on the PR's branch at `path`. */
+const cloneRow = () => ({
+  id: "w1",
+  kind: "worktree",
+  name: "api",
+  projectId: "p1",
+  path: dir,
+  branch: "main",
+  hostId: "local",
+});
+const branchRow = (path: string) => ({
+  ...cloneRow(),
+  id: "w2",
+  name: "pr",
+  path,
+  branch: PR_VIEW.headRefName,
+});
+
+test("Create worktree checks the PR's own branch out beside the clone and opens the guide there", async () => {
+  const { host, worker, calls, all } = await setup([JSON.stringify(AGENT_GUIDE)], {
+    "optin:acme/api": true,
+  });
+  await until(() => all()[0]?.status === "ready", "the guide");
+  const wt = join(dir, "wt");
+  await mkdir(wt, { recursive: true });
+  const added = () => calls.some((c) => c.args.includes("worktree") && c.args.includes("add"));
+  // Orca lists the worktree once git has made it.
+  host.respond("workspace.list", () => ({
+    workspaces: added() ? [cloneRow(), branchRow(wt)] : [cloneRow()],
+    truncated: false,
+  }));
+  const key = "acme/api#7";
+  const branch = PR_VIEW.headRefName;
+  const opened = await worker.request("guide.open", { key, worktree: "create" });
+  if (!opened.opened) throw new Error("expected the guide to open");
+  assert.ok(
+    opened.notes.some((n) => n.includes("setup script didn't run")),
+    opened.notes.join(),
+  );
+  const fetch = calls.find((c) =>
+    c.args.includes(`+refs/heads/${branch}:refs/remotes/origin/${branch}`),
+  );
+  assert.ok(fetch?.args.includes("https://github.com/acme/api.git"), "over HTTPS, as PRs are");
+  const add = calls.find((c) => c.args.includes("worktree") && c.args.includes("add"));
+  assert.deepEqual(add?.args.slice(add.args.indexOf("add") + 1), [
+    "--track",
+    "-b",
+    branch,
+    `${dir}.worktrees/${branch.replaceAll("/", "-")}`,
+    `origin/${branch}`,
+  ]);
+  assert.deepEqual(host.callsOf("editor.open").at(-1), {
+    workspaceId: "w2",
+    path: ".orca/pr-review/pr-7.prreview.json",
+  });
+  const copy = JSON.parse(await readFile(join(wt, ".orca/pr-review/pr-7.prreview.json"), "utf8"));
+  assert.equal(copy.pr.number, 7);
+  // Open in Orca on a file opens it in the PR's worktree too.
+  await worker.request("file.open", { repo: "acme/api", number: 7, path: "src/a.ts" });
+  assert.deepEqual(host.callsOf("editor.open").at(-1), { workspaceId: "w2", path: "src/a.ts" });
+});
+
+test("a worktree already on the PR's branch is used without asking, and a fork's PR never asks", async () => {
+  const { host, worker, all } = await setup([JSON.stringify(AGENT_GUIDE)], {
+    "optin:acme/api": true,
+  });
+  await until(() => all()[0]?.status === "ready", "the guide");
+  const wt = join(dir, "wt");
+  await mkdir(wt, { recursive: true });
+  host.respond("workspace.list", { workspaces: [cloneRow(), branchRow(wt)], truncated: false });
+  assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), {
+    opened: true,
+    notes: [],
+  });
+  assert.deepEqual(host.callsOf("editor.open").at(-1), {
+    workspaceId: "w2",
+    path: ".orca/pr-review/pr-7.prreview.json",
+  });
+});
+
+test("a fork's PR opens in the clone with a note, without asking", async () => {
+  const { host, worker, calls, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    { fromFork: true },
+  );
+  await until(() => all()[0]?.status === "ready", "the guide");
+  const opened = await worker.request("guide.open", { key: "acme/api#7" });
+  if (!opened.opened) throw new Error("expected the guide to open");
+  assert.ok(opened.notes[0]?.includes("in a fork"), opened.notes.join());
+  assert.deepEqual(host.callsOf("editor.open").at(-1), {
+    workspaceId: "w1",
+    path: ".orca/pr-review/pr-7.prreview.json",
+  });
+  assert.ok(!calls.some((c) => c.args.includes("worktree")), "no worktree for a fork's branch");
+});
+
+test("a rewritten guide replaces the copy already open in the PR's worktree", async () => {
+  const { host, worker, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+  );
+  await until(() => all()[0]?.status === "ready", "the guide");
+  const wt = join(dir, "wt");
+  await mkdir(join(wt, ".orca/pr-review"), { recursive: true });
+  await writeFile(join(wt, ".orca/pr-review/pr-7.prreview.json"), "{}");
+  host.respond("workspace.list", { workspaces: [cloneRow(), branchRow(wt)], truncated: false });
+  await worker.request("guide.generate", { key: "acme/api#7" });
+  const copy = join(wt, ".orca/pr-review/pr-7.prreview.json");
+  await until(() => readFileSync(copy, "utf8") !== "{}", "the copy to be rewritten");
+  assert.equal(JSON.parse(readFileSync(copy, "utf8")).pr.number, 7);
 });
 
 test("respects the daily limit for automatic runs", async () => {
@@ -480,7 +713,7 @@ test("the status bar command opens the focused branch guide, writing one first w
   await until(() => host.callsOf("editor.open").length === 1, "the guide to open");
   assert.deepEqual(host.callsOf("editor.open")[0], {
     workspaceId: "w1",
-    path: ".orca/pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-review/pr-7.prreview.json",
   });
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 1);
   assert.equal(
@@ -489,7 +722,7 @@ test("the status bar command opens the focused branch guide, writing one first w
     "a run you asked for does not count toward the daily limit",
   );
   const bar = host.callsOf("statusBar.update").at(-1) as { text?: string; tone?: string };
-  assert.equal(bar.text, "PR tour: High risk");
+  assert.equal(bar.text, "Review Desk: High risk");
   assert.equal(bar.tone, "danger");
   // With the guide stored, the same command just opens it.
   assert.equal(await worker.command("openCurrent"), "Opened the review guide");
@@ -504,7 +737,7 @@ test("coverage records the files the agent opened with its tools", async () => {
           {
             type: "tool_use",
             name: "Read",
-            input: { file_path: ".orca/pr-tour-runs/7/head/0002.txt" },
+            input: { file_path: ".orca/pr-review-runs/7/head/0002.txt" },
           },
         ],
       },
@@ -541,7 +774,7 @@ test("the agent reads the PR's files from the run folder, removed once the run e
     },
   );
   await until(() => calls.some((c) => c.cmd === "claude"), "the agent run");
-  const run = join(dir, ".orca/pr-tour-runs/7");
+  const run = join(dir, ".orca/pr-review-runs/7");
   try {
     assert.equal(
       await readFile(join(run, "index.txt"), "utf8"),
@@ -559,9 +792,11 @@ test("the agent reads the PR's files from the run folder, removed once the run e
     );
     const batch = calls.filter((c) => c.cmd === "git" && c.args.includes("--batch"));
     assert.equal(batch.length, 1, "one git process for every PR version");
-    assert.ok(batch[0]?.options?.input?.startsWith("refs/pr-tour/pr-7:src/SessionDataAccess.ts\n"));
+    assert.ok(
+      batch[0]?.options?.input?.startsWith("refs/pr-review/pr-7:src/SessionDataAccess.ts\n"),
+    );
     const prompt = calls.find((c) => c.cmd === "claude")?.options?.input ?? "";
-    assert.ok(prompt.includes("`.orca/pr-tour-runs/7/head/`"));
+    assert.ok(prompt.includes("`.orca/pr-review-runs/7/head/`"));
     // The PR's own diff says "diff --git"; nothing else may name git.
     const ours = prompt.replace(/<diff>[\s\S]*<\/diff>/, "");
     assert.ok(!/\bgit /.test(ours), "no git command in the prompt");
@@ -599,18 +834,23 @@ test("the run folder is removed when the run fails or is stopped", async () => {
 test("run folders left by a crash are removed when the worker starts; guides stay", async () => {
   const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
     before: async (clone) => {
-      await mkdir(join(clone, ".orca/pr-tour-runs/3/head"), { recursive: true });
-      await writeFile(join(clone, ".orca/pr-tour-runs/3/head/0001.txt"), "left by a crash");
+      await mkdir(join(clone, ".orca/pr-review-runs/3/head"), { recursive: true });
+      await writeFile(join(clone, ".orca/pr-review-runs/3/head/0001.txt"), "left by a crash");
       await writeFile(join(clone, ".orca/drops"), "Orca's own");
-      // Where runs were written before they moved under .orca/.
+      // PR Tour's run folders, old and new layout: it may still be installed, so they stay.
+      await mkdir(join(clone, ".orca/pr-tour-runs/4"), { recursive: true });
       await mkdir(join(clone, ".pr-tour/runs/2/head"), { recursive: true });
       await writeFile(join(clone, ".pr-tour/runs/2/head/0001.txt"), "left by a crash");
       await writeFile(join(clone, ".pr-tour/pr-3.prtour.json"), "{}");
     },
   });
   await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
-  assert.deepEqual(await readdir(join(dir, ".pr-tour")), ["pr-3.prtour.json"]);
-  assert.deepEqual(await readdir(join(dir, ".orca")), ["drops"], "the rest of .orca/ stays");
+  assert.deepEqual((await readdir(join(dir, ".pr-tour"))).sort(), ["pr-3.prtour.json", "runs"]);
+  assert.deepEqual(
+    (await readdir(join(dir, ".orca"))).sort(),
+    ["drops", "pr-tour-runs"],
+    "the rest of .orca/ stays, PR Tour's runs included",
+  );
 });
 
 test("after the repair round, stray lines and missing notes are settled instead of failing", async () => {
@@ -1066,6 +1306,96 @@ test("review.submit refuses comments off the diff and posts nothing", async () =
   assert.equal(kept.body, "x");
 });
 
+test("review.comment posts one comment now: a line, a range, the whole file; none join the draft", async () => {
+  const { worker, calls, host } = await readyGuide();
+  const key = "acme/api#7";
+  await worker.request("review.save", { key, draft: DRAFT });
+  const path = "src/SessionDataAccess.ts";
+  const asks = [
+    { path, line: 11, body: " One line. " },
+    { path, line: 12, startLine: 11, body: "A range." },
+    { path: "README.md", line: null, body: "The file." },
+  ];
+  for (const comment of asks) {
+    const result = await worker.request("review.comment", { key, comment });
+    assert.equal(result.outcome, "posted");
+  }
+  const sent = posts(calls);
+  assert.deepEqual(
+    sent.map((c) => c.args[3]),
+    Array(3).fill("repos/acme/api/pulls/7/comments"),
+  );
+  assert.deepEqual(
+    sent.map((c) => JSON.parse(c.options?.input ?? "")),
+    [
+      { commit_id: PR_VIEW.headRefOid, path, line: 11, side: "RIGHT", body: "One line." },
+      {
+        commit_id: PR_VIEW.headRefOid,
+        path,
+        line: 12,
+        side: "RIGHT",
+        start_line: 11,
+        start_side: "RIGHT",
+        body: "A range.",
+      },
+      { commit_id: PR_VIEW.headRefOid, path: "README.md", body: "The file.", subject_type: "file" },
+    ],
+  );
+  const info = await worker.request("review.get", { key });
+  assert.deepEqual(
+    info.posted?.map((c) => [c.path, c.line, c.startLine, c.body, c.url, c.id]),
+    [
+      [
+        path,
+        11,
+        undefined,
+        "One line.",
+        "https://github.com/acme/api/pull/7#discussion_r101",
+        "101",
+      ],
+      [path, 12, 11, "A range.", "https://github.com/acme/api/pull/7#discussion_r101", "101"],
+      [
+        "README.md",
+        null,
+        undefined,
+        "The file.",
+        "https://github.com/acme/api/pull/7#discussion_r101",
+        "101",
+      ],
+    ],
+  );
+  assert.equal(info.draft.comments.length, 2, "the draft keeps only its own comments");
+  assert.ok(Array.isArray(host.data().storage["posted:acme/api#7"]), "kept in posted:<key>");
+});
+
+test("review.comment refuses a line off the diff, and secrets, and posts nothing", async () => {
+  const { worker, calls } = await readyGuide();
+  const key = "acme/api#7";
+  const off = await worker.request("review.comment", {
+    key,
+    comment: { path: "src/SessionDataAccess.ts", line: 99, body: "Here?" },
+  });
+  assert.deepEqual(off, {
+    outcome: "refused",
+    message: "Line 99 is not an added or unchanged line of this diff.",
+  });
+  const gone = await worker.request("review.comment", {
+    key,
+    comment: { path: "src/Gone.ts", line: null, body: "Here?" },
+  });
+  assert.deepEqual(gone, {
+    outcome: "refused",
+    message: "src/Gone.ts is no longer changed in this PR.",
+  });
+  const secret = await worker.request("review.comment", {
+    key,
+    comment: { path: "README.md", line: null, body: `token ${TOKEN}` },
+  });
+  assert.equal(secret.outcome, "refused");
+  assert.equal(posts(calls).length, 0);
+  assert.deepEqual((await worker.request("review.get", { key })).posted, []);
+});
+
 test("Approve is refused on your own PR, before GitHub is asked", async () => {
   const { worker, calls } = await readyGuide({ author: "me" });
   assert.equal((await worker.request("review.get", { key: "acme/api#7" })).canApprove, false);
@@ -1120,7 +1450,7 @@ test("diff.get answers one file's diff at the guide's commit, and caches it", as
   assert.deepEqual([diff.additions, diff.deletions, diff.truncated], [2, 1, false]);
   const [call] = diffCalls(calls, "src/SessionDataAccess.ts");
   assert.ok(
-    call?.args.includes(`refs/pr-tour/base-7...${PR_VIEW.headRefOid}`),
+    call?.args.includes(`refs/pr-review/base-7...${PR_VIEW.headRefOid}`),
     call?.args.join(" "),
   );
   assert.ok(call?.args.includes("--literal-pathspecs"));
@@ -1149,7 +1479,7 @@ test("diff.get fetches the PR first when the clone lacks the guide's commit", as
   const diff = await worker.request("diff.get", { key: "acme/api#7", path: "README.md" });
   const fetches = calls.filter((c) => c.cmd === "git" && c.args.includes("fetch"));
   assert.equal(fetches.length, fetchesBefore + 1);
-  assert.ok(fetches.at(-1)?.args.includes("+refs/pull/7/head:refs/pr-tour/pr-7"));
+  assert.ok(fetches.at(-1)?.args.includes("+refs/pull/7/head:refs/pr-review/pr-7"));
   assert.deepEqual(diff.lines, ["@@ -1 +1,2 @@", " # api", "+notes"]);
 });
 
@@ -1174,6 +1504,50 @@ test("a clone whose origin uses another host name for GitHub still fetches from 
   assert.ok(fetches.length > 0);
   for (const f of fetches)
     assert.ok(f.args.includes("https://github.com/acme/api.git"), f.args.join(" "));
+});
+
+const viewedCalls = (calls: Call[]) =>
+  calls.filter((c) => c.cmd === "gh" && c.args.some((a) => /\b(un)?markFileAsViewed\(/.test(a)));
+
+test("viewed.get reads every page of files, and only VIEWED counts as ticked", async () => {
+  const { worker } = await readyGuide({
+    viewedPages: [["README.md"], ["src/SessionDataAccess.ts"]],
+  });
+  const answer = await worker.request("viewed.get", { key: "acme/api#7" });
+  assert.deepEqual(answer.viewed, ["README.md", "src/SessionDataAccess.ts"]);
+});
+
+test("viewed.set ticks and unticks a file on the PR read last", async () => {
+  const { worker, calls } = await readyGuide();
+  await worker.request("viewed.get", { key: "acme/api#7" });
+  await worker.request("viewed.set", { key: "acme/api#7", path: "README.md", viewed: true });
+  await worker.request("viewed.set", { key: "acme/api#7", path: "README.md", viewed: false });
+  const [mark, unmark] = viewedCalls(calls).map((c) => c.args.join(" "));
+  assert.match(mark ?? "", /markFileAsViewed\(/);
+  assert.ok(!mark?.includes("unmarkFileAsViewed"), mark);
+  assert.match(unmark ?? "", /unmarkFileAsViewed\(/);
+  for (const sent of [mark, unmark]) {
+    assert.ok(sent?.includes("id=PR_7"), sent);
+    assert.ok(sent?.includes("path=README.md"), sent);
+  }
+});
+
+test("viewed.set checks its input and passes GitHub's refusal on with a code", async () => {
+  const { worker, calls } = await readyGuide({ refuseViewed: true });
+  const set = (input: Record<string, unknown>) =>
+    worker.request("viewed.set", { key: "acme/api#7", ...input } as never);
+  const invalid = (e: unknown) => e instanceof Error && "code" in e && e.code === "invalid";
+  await assert.rejects(set({ path: "", viewed: true }), invalid);
+  await assert.rejects(set({ path: "README.md", viewed: "yes" }), invalid);
+  assert.equal(viewedCalls(calls).length, 0, "nothing sent for a bad input");
+  await assert.rejects(
+    set({ path: "README.md", viewed: true }),
+    (e: unknown) =>
+      e instanceof Error &&
+      "code" in e &&
+      e.code === "unavailable" &&
+      e.message.includes("Resource not accessible"),
+  );
 });
 
 test("diff.get refuses a commit that is not a commit id", async () => {
@@ -1302,7 +1676,7 @@ test("breakdown.get groups the PR's files by kind at the guide's commit, and cac
     "computed once (when the guide was written), then cached",
   );
   assert.equal(git("ls-tree").length, 1);
-  const range = `refs/pr-tour/base-7...${PR_VIEW.headRefOid}`;
+  const range = `refs/pr-review/base-7...${PR_VIEW.headRefOid}`;
   assert.ok(git("--numstat")[0]?.args.includes(range));
   assert.ok(git("ls-tree")[0]?.args.includes(PR_VIEW.headRefOid));
   assert.ok(git("check-attr")[0]?.args.includes(`--source=${PR_VIEW.headRefOid}`));
@@ -1376,7 +1750,7 @@ test("the tour covers every file: skipped files are stored, coverage is repaired
   const repair = runs[1]?.options?.input ?? "";
   for (const problem of [
     '"pnpm-lock.yaml" is skipped by design (lockfile)',
-    '"src/CustomerService.ts" is a contract file; give it a deep stop of its own',
+    '"src/CustomerService.ts" is a contract file; make this stop deep',
     '"README.md" is in no stop',
   ])
     assert.ok(repair.includes(problem), problem);
@@ -1389,14 +1763,13 @@ test("the tour covers every file: skipped files are stored, coverage is repaired
     guide.readingOrder.map((r: any) => [r.depth, r.files, r.why]),
     [
       ["deep", ["src/SessionDataAccess.ts"], "finding"],
-      ["skim", ["src/SessionDataAccess.test.ts"], "tests"],
-      ["deep", ["src/CustomerService.ts"], "risky"],
+      ["deep", ["src/SessionDataAccess.test.ts", "src/CustomerService.ts"], "risky"],
       ["skim", ["README.md"], "routine"],
     ],
   );
-  assert.ok(current?.logs.some((l) => l.includes("moved from a skim stop to its own deep stop")));
+  assert.ok(current?.logs.some((l) => l.includes("made deep for src/CustomerService.ts")));
   assert.ok(current?.logs.some((l) => l.includes('added to "Other changes": README.md')));
-  assert.ok(current?.logs.some((l) => l.includes("2 deep, 2 skim; 2 skipped")));
+  assert.ok(current?.logs.some((l) => l.includes("2 deep, 1 skim; 2 skipped")));
   void second;
 });
 

@@ -106,17 +106,28 @@ function tokenizeLines(hl: HighlighterCore, lang: GrammarId, lines: readonly str
 
 type Side = { rows: number[]; text: string[] };
 
-/** Which rows make up each side of the diff, in order, and their text. */
-export function sides(rows: readonly DiffRow[]): { head: Side; base: Side } {
-  const head: Side = { rows: [], text: [] };
-  const base: Side = { rows: [], text: [] };
+/**
+ * Each hunk's two sides, in order: the PR head (unchanged and added rows) and the base (unchanged
+ * and removed rows). Why per hunk: the lines between hunks aren't in the diff, so a comment or
+ * string a hunk leaves open would otherwise colour every hunk after it.
+ */
+export function hunkSides(rows: readonly DiffRow[]): { head: Side; base: Side }[] {
+  const hunks: { head: Side; base: Side }[] = [];
   rows.forEach((r, i) => {
-    const side = r.kind === "ctx" || r.kind === "add" ? head : r.kind === "del" ? base : null;
-    if (!side) return;
-    side.rows.push(i);
-    side.text.push(r.text);
+    if (r.kind === "eof") return;
+    if (r.kind === "hunk" || !hunks.length)
+      hunks.push({ head: { rows: [], text: [] }, base: { rows: [], text: [] } });
+    if (r.kind === "hunk") return;
+    const hunk = hunks[hunks.length - 1];
+    if (!hunk) return;
+    for (const side of r.kind === "ctx"
+      ? [hunk.head, hunk.base]
+      : [r.kind === "add" ? hunk.head : hunk.base]) {
+      side.rows.push(i);
+      side.text.push(r.text);
+    }
   });
-  return { head, base };
+  return hunks;
 }
 
 /** Colours for every code row of `rows`, or an empty map for a language the guide doesn't colour. */
@@ -126,8 +137,8 @@ export async function highlightRows(path: string, rows: readonly DiffRow[]): Pro
   if (lang === null) return out;
   const hl = await core();
   if (!hl.getLoadedLanguages().includes(lang)) await hl.loadLanguage(GRAMMARS[lang]);
-  const { head, base } = sides(rows);
-  for (const side of [head, base]) {
+  // Base before head, so an unchanged row keeps the colours its head side gives it.
+  for (const side of hunkSides(rows).flatMap((h) => [h.base, h.head])) {
     if (!side.rows.length) continue;
     tokenizeLines(hl, lang, side.text).forEach((toks, k) => {
       const row = side.rows[k];

@@ -20,8 +20,8 @@ export const LOCKFILE_EXCLUDES: readonly string[] = [...LOCKFILES].map(
 
 /** The refs a PR is fetched into: outside `refs/heads`, so no branch of the clone moves. */
 export const prRefs = (number: number): PrRefs => ({
-  head: `refs/pr-tour/pr-${number}`,
-  base: `refs/pr-tour/base-${number}`,
+  head: `refs/pr-review/pr-${number}`,
+  base: `refs/pr-review/base-${number}`,
 });
 
 /** The folder's `origin` URL, or null when it has none. */
@@ -138,15 +138,14 @@ export async function gitCommonDir(workspacePath: string): Promise<string> {
   return isAbsolute(common) ? common : join(workspacePath, common);
 }
 
-/** What PR Tour writes in a clone: guides, and each run's files. */
-// `.pr-tour/` is where older versions wrote guides; kept so any left there stay hidden.
-const HIDDEN = [`${GUIDES}/`, `${RUNS}/`, ".pr-tour/"];
+/** What Review Desk writes in a clone: guides, and each run's files. */
+const HIDDEN = [`${GUIDES}/`, `${RUNS}/`];
 
 /**
- * Adds PR Tour's folders to the repository's own exclude list, so guides and run files never
+ * Adds Review Desk's folders to the repository's own exclude list, so guides and run files never
  * show in `git status`.
  */
-export async function hidePrTourFolders(workspacePath: string): Promise<void> {
+export async function hideOwnFolders(workspacePath: string): Promise<void> {
   const infoDir = join(await gitCommonDir(workspacePath), "info");
   const exclude = join(infoDir, "exclude");
   const current = await readFile(exclude, "utf8").catch(() => "");

@@ -11,17 +11,14 @@ import {
   type TourRules,
 } from "./schema";
 
-/** The skim stop that collects files the agent left out of every stop. */
+/** The stop that collects files the agent left out of every stop. */
 export const OTHER_HEADLINE = "Other changes the agent didn’t place in a stop";
-
-const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** What enforcing coverage knows and builds up as it goes through the stops. */
 type Pass = {
   rules: TourRules;
   isChanged: ReadonlySet<string>;
-  /** The most severe blocker or major finding per file: its headline names the deep stop. */
+  /** Files with a blocker or major finding, to their most severe one's headline. */
   severe: ReadonlyMap<string, string>;
   /** Files already in a stop. */
   placed: Set<string>;
@@ -31,15 +28,9 @@ type Pass = {
 
 const mustBeDeep = (p: Pass, f: string): boolean => p.severe.has(f) || p.rules.risky.has(f);
 
-/** A deep stop of its own for a risky file or one with a severe finding. */
-const deepStop = (p: Pass, file: string, areaId: string): Stop => ({
-  depth: "deep",
-  files: [file],
-  why: p.severe.has(file) ? "finding" : "risky",
-  areaId,
-  headline:
-    p.severe.get(file) ?? `${capital(p.rules.risky.get(file) ?? "file")} ${basename(file)} changed`,
-});
+/** Why a group must be deep: a severe finding outranks a risky kind. */
+const deepWhy = (p: Pass, files: readonly string[]): Stop["why"] =>
+  files.some((f) => p.severe.has(f)) ? "finding" : "risky";
 
 /** The stop's files that stay in the tour here: changed, not skipped, not in an earlier stop. */
 function keptFiles(p: Pass, s: Stop, i: number): string[] {
@@ -56,7 +47,7 @@ function keptFiles(p: Pass, s: Stop, i: number): string[] {
   });
 }
 
-/** Rules 1 and 2 for one stop: what is left of it, then a deep stop for each file that needs one. */
+/** Rules 1 and 2 for one stop: what is left of it, made deep when a file in it must be. */
 function placeStop(p: Pass, s: Stop, i: number): void {
   const files = keptFiles(p, s, i);
   if (!files.length) {
@@ -64,48 +55,34 @@ function placeStop(p: Pass, s: Stop, i: number): void {
     return;
   }
   const { focus, ...rest } = s;
-  /** The stop on `list`, keeping focus only while its first file is still the one focused. */
-  const on = (base: Omit<Stop, "focus">, list: string[]): Stop =>
-    focus && list[0] === s.files[0] ? { ...base, files: list, focus } : { ...base, files: list };
-  const moving = s.depth === "skim" ? files.filter((f) => mustBeDeep(p, f)) : [];
-  if (!moving.length) {
-    p.out.push(on(rest, files));
+  // Focus is on the first file, so it stays only while that file still leads the stop.
+  const kept: Stop =
+    focus && files[0] === s.files[0] ? { ...rest, files, focus } : { ...rest, files };
+  const deep = s.depth === "skim" ? files.filter((f) => mustBeDeep(p, f)) : [];
+  if (!deep.length) {
+    p.out.push(kept);
     return;
   }
-  const staying = files.filter((f) => !moving.includes(f));
-  const moved = moving.map((f) => deepStop(p, f, s.areaId));
-  for (const m of moved)
-    p.fixed.push(`stop ${i + 1}: ${m.files[0]} moved from a skim stop to its own deep stop`);
-  if (staying.length) p.out.push(on(rest, staying));
-  else {
-    // Nothing routine left: the first moved file keeps the stop's explanation.
-    const { depth: _d, why: _w, differences: _x, ...text } = rest;
-    const [firstMoved] = moved;
-    const [firstMoving] = moving;
-    if (firstMoved && firstMoving !== undefined)
-      moved[0] = on({ ...text, depth: "deep", why: firstMoved.why }, [firstMoving]);
-  }
-  p.out.push(...moved);
+  const { differences: _d, ...text } = kept;
+  p.out.push({ ...text, depth: "deep", why: deepWhy(p, deep) });
+  p.fixed.push(`stop ${i + 1}: made deep for ${deep.join(", ")}`);
 }
 
-/** Rule 3: files in no stop get one, deep each when they must be, else together in "Other changes". */
+/** Rule 3: files in no stop go in one "Other changes" stop, deep when any of them must be. */
 function placeMissing(p: Pass, changed: readonly string[]): void {
   const missing = changed.filter((f) => !p.placed.has(f) && !p.rules.skipped.has(f));
-  const routine = missing.filter((f) => !mustBeDeep(p, f));
-  for (const f of missing.filter((x) => mustBeDeep(p, x))) {
-    p.out.push(deepStop(p, f, "other"));
-    p.fixed.push(`${f}: in no stop, given its own deep stop`);
-  }
-  if (!routine.length) return;
+  if (!missing.length) return;
+  const deep = missing.filter((f) => mustBeDeep(p, f));
+  // The first file is the one a group leads with, so one that must be read closely goes first.
+  const files = [...deep, ...missing.filter((f) => !deep.includes(f))];
   p.out.push({
-    depth: "skim",
-    files: routine,
-    why: "routine",
+    ...(deep.length ? { depth: "deep", why: deepWhy(p, deep) } : { depth: "skim", why: "routine" }),
+    files,
     areaId: "other",
     headline: OTHER_HEADLINE,
   });
   p.fixed.push(
-    `${routine.length} file(s) in no stop, added to "Other changes": ${routine.join(", ")}`,
+    `${missing.length} file(s) in no stop, added to "Other changes": ${files.join(", ")}`,
   );
 }
 
@@ -115,10 +92,10 @@ function placeMissing(p: Pass, changed: readonly string[]): void {
  * 1. Skipped files, files the PR doesn't change, and files already in an earlier stop leave the
  *    stop; a stop left with no file is dropped. Focus belongs to the first file, so it goes when
  *    that file does.
- * 2. Risky files and files with a blocker or major finding in a skim stop move to a deep stop of
- *    their own, placed right after it (the first one takes the skim's text if nothing is left).
- * 3. Files in no stop are appended: risky or severe ones each as a deep stop, the rest in one skim
- *    stop, "Other changes".
+ * 2. A skim stop holding a risky file or one with a blocker or major finding becomes deep, its
+ *    files kept together: the tour is a few groups, so a file never gets a stop of its own here.
+ * 3. Files in no stop are appended in one stop, "Other changes": deep (those files first) when any
+ *    of them must be, else skim.
  */
 export function enforceCoverage(
   stops: readonly Stop[],

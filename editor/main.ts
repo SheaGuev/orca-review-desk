@@ -1,4 +1,4 @@
-// The guide tab: draws a .prtour.json file as a guided tour (overview, one stop at a time,
+// The guide tab: draws a .prreview.json file as a guided tour (overview, one stop at a time,
 // wrap-up; see editor/tour.ts) and remembers where the reviewer is through the worker. It never
 // edits the file, so Orca's Source view stays the way to see the raw JSON. Everything from the
 // guide goes in as text, never as HTML.
@@ -34,8 +34,10 @@ import {
 import { h } from "./dom";
 import { startReview, type Review } from "./review";
 import { codeThemeButton } from "./code-theme";
+import { fitRail } from "./rail-layout";
 import { STYLE } from "./style";
 import { draw, type FocusTarget, type LineTarget, type TourContext } from "./tour";
+import { createViewed } from "./viewed";
 
 const style = document.createElement("style");
 style.textContent = STYLE;
@@ -53,16 +55,15 @@ function announce(text: string): void {
 
 const html = document.documentElement;
 document.body.append(codeThemeButton(html));
-/** Tab widths where the layout changes: overview columns and the stop menu, then the rail. */
+/** Tab width where the overview gets its columns. */
 const COLUMNS_MIN = 1100;
-const RAIL_MIN = 1400;
 /** Below this, tighter page padding and stacked rows. */
 const NARROW_MAX = 600;
 // The tab's own width, not the window's: Orca resizes tabs as sidebars open and close. Only
 // classes change, so nothing is redrawn and nothing typed is lost.
 const fitWidth = () => {
   html.classList.toggle("w-cols", html.clientWidth >= COLUMNS_MIN);
-  html.classList.toggle("w-rail", html.clientWidth >= RAIL_MIN);
+  fitRail();
   html.classList.toggle("w-narrow", html.clientWidth < NARROW_MAX);
 };
 fitWidth();
@@ -153,7 +154,13 @@ function workerLinks(guide: PrGuide, say: (text: string) => void) {
   /** Asked of the worker once each; a failed answer is asked for again. */
   const diffs = promiseCache<DiffFile>();
   const changes = promiseCache<Breakdown>();
+  const viewed = createViewed({
+    load: async () => (await orca.plugin.request("viewed.get", { key })).viewed,
+    save: (path, on) => orca.plugin.request("viewed.set", { key, path, viewed: on }),
+    say,
+  });
   return {
+    viewed,
     load: (path: string) =>
       diffs.get(path, () =>
         orca.plugin.request("diff.get", { key, path, commit }, { timeoutMs: 120_000 }),

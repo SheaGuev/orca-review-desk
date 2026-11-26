@@ -1,39 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
   "manifestVersion": 2,
-  "id": "pr-tour",
-  "name": "PR Tour",
-  "version": "0.3.0",
-  "description": "Understand a PR, then tour its diff in the order that explains it. For each PR waiting on you, your agent writes a guide: what, why and the impact, risk and findings, a stop-by-stop tour, and a review you post to GitHub.",
-  "repository": "https://github.com/adamthewilliam/orca-pr-tour",
+  "id": "review-desk",
+  "name": "Review Desk",
+  "version": "0.1.0",
+  "description": "PR reviews inside Orca: an AI walkthrough that groups the PR by idea, real diffs in your editor colours, inline comments, GitHub viewed sync, and a worktree on the PR branch.",
   "icon": "assets/icon.png",
   "license": "MIT",
-  "cover": {
-    "path": "assets/cover.png",
-    "alt": "A guide's what, why and impact above tour stop 12 of 13: the stop list, the one idea this stop explains, and the diff hunk that shows it"
-  },
-  "screenshots": [
-    {
-      "path": "assets/guide-overview.png",
-      "alt": "Guide overview: what, why and impact, a medium risk callout, findings by severity, the changes by area and the 13-stop tour grid",
-      "caption": "Overview: risk, findings, the changes and the tour"
-    },
-    {
-      "path": "assets/guide-stop.png",
-      "alt": "Stop 12 of 13: the stop list on the left, the explanation above the AutomationSection.tsx diff, and a major finding with its suggested comment under line 109",
-      "caption": "A tour stop: one idea, the hunks that show it, and findings in place"
-    },
-    {
-      "path": "assets/guide-finish.png",
-      "alt": "Finish review: a major finding to add or dismiss, two pending comments, the summary, where the review goes, and Post to GitHub",
-      "caption": "Finish review: settle findings, then post one GitHub review"
-    },
-    {
-      "path": "assets/settings.png",
-      "alt": "PR Tour settings: agent harness, model, auto-generate toggles, teams, team filter, daily limit and extra instructions",
-      "caption": "Settings: pick the agent and model, teams and limits"
-    }
-  ],
   "engines": {
     "orca": ">=1.4.259"
   },
@@ -44,8 +17,8 @@
     "panels": [
       {
         "id": "reviews",
-        "title": "Reviews",
-        "icon": "gauge",
+        "title": "Review Desk",
+        "icon": "book",
         "entry": "src/panel.tsx",
         "ui": "components"
       }
@@ -53,10 +26,9 @@
     "customEditors": [
       {
         "id": "guide",
-        "title": "Review guide",
+        "title": "Review Desk guide",
         "extensions": [
-          ".prtour.json",
-          ".prguide.json"
+          ".prreview.json"
         ],
         "entry": "editor/main.ts",
         "priority": "default",
@@ -66,25 +38,25 @@
     "commands": [
       {
         "id": "refresh",
-        "title": "PR Tour: Check for review requests"
+        "title": "Review Desk: Check for review requests"
       },
       {
         "id": "openCurrent",
-        "title": "PR Tour: Open guide for this branch",
+        "title": "Review Desk: Open guide for this branch",
         "when": "workspace"
       },
       {
         "id": "generateCurrent",
-        "title": "PR Tour: Generate guide for this branch",
+        "title": "Review Desk: Generate guide for this branch",
         "when": "workspace"
       }
     ],
     "statusBarItems": [
       {
         "id": "guide",
-        "text": "PR tour",
-        "icon": "gauge",
-        "tooltip": "PR Tour",
+        "text": "Review Desk",
+        "icon": "book",
+        "tooltip": "Review Desk",
         "command": "openCurrent"
       }
     ],
@@ -189,6 +161,15 @@
         "maximum": 500
       },
       {
+        "key": "recentDays",
+        "title": "Recently reviewed",
+        "description": "How many days back the Recently reviewed list looks for open PRs you reviewed and aren't requested on.",
+        "type": "integer",
+        "default": 14,
+        "minimum": 1,
+        "maximum": 90
+      },
+      {
         "key": "extraInstructions",
         "title": "Extra instructions",
         "description": "Added to the agent's prompt after the built-in instructions.",
@@ -213,6 +194,23 @@
           "Cursor Dark",
           "Armada",
           "No colors"
+        ]
+      },
+      {
+        "key": "worktreeMode",
+        "title": "Worktree for a review",
+        "description": "When you open a guide and no worktree is on the PR's branch: ask, always check the branch out beside the clone, or never.",
+        "type": "string",
+        "default": "ask",
+        "enum": [
+          "ask",
+          "always",
+          "never"
+        ],
+        "enumLabels": [
+          "Ask",
+          "Always",
+          "Never"
         ]
       }
     ]

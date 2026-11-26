@@ -2,7 +2,6 @@
 // post, a line saying what will be sent, and the button that sends it as one GitHub review.
 // Nothing is posted except by a press on "Post to GitHub" here.
 import { message } from "../src/errors";
-import { pendingOrder } from "../src/pending";
 import {
   openFindings,
   reviewProblem,
@@ -10,8 +9,10 @@ import {
   type DraftComment,
   type ReviewEvent,
 } from "../src/review";
+import type { ComposerState } from "./composer";
 import { h } from "./dom";
 import { plural } from "./parts";
+import { commentList } from "./review-comments";
 import type { ReviewSession } from "./review-session";
 
 const EVENT_LABEL: Record<ReviewEvent, string> = {
@@ -64,6 +65,8 @@ type State = {
   posted: Posted | null;
   /** Once the reviewer edits the summary, it is theirs: no more suggested text, even if emptied. */
   summaryTouched: boolean;
+  /** Pending comments open for editing in the list, with what is typed so far, by id. */
+  editing: Map<string, ComposerState>;
 };
 
 /** The summary as it would be posted: what the reviewer wrote, else the suggestion. */
@@ -113,60 +116,6 @@ function staleNote(session: ReviewSession, c: DraftComment): Node[] {
     ),
     h("div", { class: "row" }, whole),
   ];
-}
-
-/** The comment's text, editable in place; typing saves without redrawing. */
-function commentText(session: ReviewSession, c: DraftComment, id: string): HTMLTextAreaElement {
-  // Tall enough to read the whole comment without scrolling inside it.
-  const rows = Math.min(8, Math.max(2, Math.ceil(c.body.length / 90) + c.body.split("\n").length));
-  const text = h("textarea", { id, rows: String(rows), class: "input" });
-  text.value = c.body;
-  text.addEventListener("input", () =>
-    session.update(
-      {
-        ...session.draft,
-        comments: session.draft.comments.map((x) =>
-          x.id === c.id ? { ...x, body: text.value } : x,
-        ),
-      },
-      { redraw: false },
-    ),
-  );
-  return text;
-}
-
-/** One pending comment in the wrap-up's list: where it is, its text, Show in diff and Delete. */
-function commentEditor(session: ReviewSession, c: DraftComment): HTMLElement {
-  const id = `edit-${c.id}`;
-  const remove = h(
-    "button",
-    { type: "button", class: "btn sm ghost", "aria-label": `Delete the comment on ${whereOf(c)}` },
-    "Delete",
-  );
-  remove.addEventListener("click", () => removeComment(session, c));
-  const go = h(
-    "button",
-    {
-      type: "button",
-      class: "btn sm ghost",
-      "aria-label": `Show the comment on ${whereOf(c)} in its diff`,
-    },
-    "Show in diff →",
-  );
-  go.addEventListener("click", () => session.nav?.jump(c));
-  const stale = session.stale.has(c.id);
-  return h(
-    "li",
-    { class: stale ? "pending stale" : "pending" },
-    h(
-      "div",
-      { class: "row between" },
-      h("label", { for: id, class: "mono small" }, whereOf(c)),
-      h("div", { class: "row" }, session.nav ? go : null, remove),
-    ),
-    commentText(session, c, id),
-    ...(stale ? staleNote(session, c) : []),
-  );
 }
 
 /** Which verdicts this reviewer may post: GitHub takes only comments on your own PR. */
@@ -277,20 +226,25 @@ function postRow(
   );
 }
 
-/** Every pending comment in tour order (the order the bar's ‹ › step through), or how to add one. */
-function pendingList(session: ReviewSession): HTMLElement {
-  const { comments } = session.draft;
-  if (!comments.length)
-    return h(
-      "p",
-      { class: "muted small" },
-      "Add comments from the stops: a suggested comment’s Add to review, or + on a line.",
-    );
-  return h(
-    "ul",
-    { class: "pending-list" },
-    ...pendingOrder(session.stops, comments).map((c) => commentEditor(session, c)),
-  );
+/** Every comment of the review, pending then posted. */
+function reviewList(v: State): HTMLElement {
+  const { session } = v;
+  return commentList(session, {
+    editing: v.editing,
+    save: (c, body) => {
+      session.update({
+        ...session.draft,
+        comments: session.draft.comments.map((x) => (x.id === c.id ? { ...x, body } : x)),
+      });
+      session.announce(`Comment on ${whereOf(c)} saved`);
+    },
+    remove: (c) => {
+      v.editing.delete(c.id);
+      removeComment(session, c);
+    },
+    stale: (c) => staleNote(session, c),
+    redraw: v.redraw,
+  });
 }
 
 /**
@@ -343,9 +297,10 @@ function drawVerdict(v: State, into: HTMLElement): void {
   }
   v.posted = null;
   const n = session.draft.comments.length;
+  const sent = session.posted.length;
   const summary = summaryField(v, "verdict-body", 5);
   const suggested = !v.summaryTouched && !session.draft.body && summary.value !== "";
-  const list = pendingList(session);
+  const list = reviewList(v);
   const choice = verdictChoice(v, into);
   // While it is on its way, nothing in the review can be changed.
   for (const field of [list, summary, choice]) if (field) field.inert = v.posting;
@@ -355,7 +310,13 @@ function drawVerdict(v: State, into: HTMLElement): void {
       ? null
       : h("p", { class: "muted small" }, "Your own PR: GitHub only takes comments here."),
     // With no comments, the hint under it already says so.
-    n ? h("h3", { class: "eyebrow" }, `${plural(n, "comment")} pending`) : null,
+    n || sent
+      ? h(
+          "h3",
+          { class: "eyebrow" },
+          [...(n ? [`${n} pending`] : []), ...(sent ? [`${sent} posted`] : [])].join(" · "),
+        )
+      : null,
     list,
     h("label", { for: "verdict-body", class: "small" }, "Summary"),
     summary,
@@ -425,6 +386,7 @@ export function createVerdict(session: ReviewSession, redraw: () => void): Verdi
     posting: false,
     posted: null,
     summaryTouched: session.info.draft.body.trim() !== "",
+    editing: new Map(),
   };
   return {
     draw: (into) => drawVerdict(v, into),

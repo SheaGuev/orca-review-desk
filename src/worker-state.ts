@@ -176,6 +176,7 @@ export function queueStateOf(state: WorkerState): QueueState {
     notice: notice(state, items),
     agentLabel: agentLabel(state.settings),
     includeAuthored: state.settings.includeAuthored,
+    recentDays: state.settings.recentDays,
     openKey: state.openKey,
   };
 }

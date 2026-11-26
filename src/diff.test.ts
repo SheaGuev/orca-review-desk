@@ -149,7 +149,7 @@ test("coverage comes from the files the agent read with its tools", () => {
           {
             type: "tool_use",
             name: "Read",
-            input: { file_path: "/repo/.orca/pr-tour-runs/7/head/0002.txt" },
+            input: { file_path: "/repo/.orca/pr-review-runs/7/head/0002.txt" },
           },
         ],
       },
@@ -161,12 +161,12 @@ test("coverage comes from the files the agent read with its tools", () => {
           {
             type: "tool_use",
             name: "Read",
-            input: { file_path: ".orca/pr-tour-runs/7/diffs/0003.diff" },
+            input: { file_path: ".orca/pr-review-runs/7/diffs/0003.diff" },
           },
           {
             type: "tool_use",
             name: "Read",
-            input: { file_path: "/repo/.orca/pr-tour-runs/7/index.txt" },
+            input: { file_path: "/repo/.orca/pr-review-runs/7/index.txt" },
           },
           { type: "tool_use", name: "Grep", input: { pattern: "x", path: "src/c.ts" } },
         ],
@@ -179,9 +179,9 @@ test("coverage comes from the files the agent read with its tools", () => {
   const changed = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/x.md", "src/d.ts"];
   // The run's index: prepared files by path from the clone, to the PR path each one holds.
   const prepared = new Map([
-    [".orca/pr-tour-runs/7/head/0002.txt", "src/b.ts"],
-    [".orca/pr-tour-runs/7/diffs/0003.diff", "docs/x.md"],
-    [".orca/pr-tour-runs/7/head/0003.txt", "docs/x.md"],
+    [".orca/pr-review-runs/7/head/0002.txt", "src/b.ts"],
+    [".orca/pr-review-runs/7/diffs/0003.diff", "docs/x.md"],
+    [".orca/pr-review-runs/7/head/0003.txt", "docs/x.md"],
   ]);
   const read = filesReadByAgent(calls, changed, "/repo", prepared);
   assert.deepEqual(read, ["src/a.ts", "src/b.ts", "docs/x.md"]);
@@ -197,11 +197,11 @@ test("coverage comes from the files the agent read with its tools", () => {
 
 test("a read through the clone's resolved path still counts (macOS /var is /private/var)", () => {
   const changed = ["src/report.ts", "src/a.ts"];
-  const prepared = new Map([[".orca/pr-tour-runs/7/diffs/0001.diff", "src/report.ts"]]);
+  const prepared = new Map([[".orca/pr-review-runs/7/diffs/0001.diff", "src/report.ts"]]);
   const calls = [
     {
       name: "Read",
-      input: { file_path: "/private/var/folders/x/clone/.orca/pr-tour-runs/7/diffs/0001.diff" },
+      input: { file_path: "/private/var/folders/x/clone/.orca/pr-review-runs/7/diffs/0001.diff" },
     },
     { name: "Read", input: { file_path: "/private/var/folders/x/clone/src/a.ts" } },
   ];

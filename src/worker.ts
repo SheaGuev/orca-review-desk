@@ -11,10 +11,13 @@ import { createClones, type Clones } from "./clones";
 import { fail, message } from "./errors";
 import { loadLoginPath } from "./exec";
 import { createFocus, type Focus } from "./focus";
-import { prDetails } from "./github";
+import { prDetails, prHead } from "./github";
 import { createGuideRun } from "./guide-run";
 import { createOpener, type Opener } from "./open-guide";
 import { createPrData } from "./pr-data";
+import { createPrWorktrees, FORK_NOTE, type PrWorktrees, type Workspace } from "./pr-worktree";
+import type { OpenResult, WorktreeChoice } from "./protocol";
+import { importPrTourGuide } from "./pr-tour-import";
 import { createQueueCheck } from "./queue-check";
 import { buildItem, restoreItem, type PrFound, type Tracked } from "./queue-items";
 import { prKey } from "./repo";
@@ -60,6 +63,7 @@ type Parts = {
   clones: Clones;
   focus: Focus;
   opener: Opener;
+  worktrees: PrWorktrees;
   log: (text: string) => void;
   publish: () => void;
   /** The PR as the queue shows it now, read from storage and the local clone. */
@@ -68,21 +72,52 @@ type Parts = {
   restoreItem: (saved: SavedPr) => Promise<Tracked>;
 };
 
-async function requireGuide(store: Store, key: string): Promise<StoredGuide> {
-  const guide = await store.guide(key);
+async function requireGuide(store: Store, clones: Clones, key: string): Promise<StoredGuide> {
+  const guide = (await store.guide(key)) ?? (await importPrTourGuide(store, clones, key));
   if (!guide) throw fail("unavailable", "No guide for this PR yet");
   return guide;
 }
 
+/** The panel's answer, or whether this open may ask the person about a worktree. */
+export type OpenChoice = WorktreeChoice | "may-ask" | "no-asking";
+
+type Placement = { ask: { branch: string } } | { workspace: Workspace | null; notes: string[] };
+
+/**
+ * Where a guide opens: the worktree on the PR's branch, one made for it (as the person chose or
+ * the worktree setting says), or the clone. Only the panel can be asked; elsewhere "ask" opens in
+ * the clone.
+ */
+async function placeGuide(p: Parts, guide: StoredGuide, choice: OpenChoice): Promise<Placement> {
+  const setting = p.state.settings.worktreeMode;
+  const mode = choice === "create" ? "always" : choice === "skip" ? "never" : setting;
+  const plan = await p.worktrees.plan(guide.pr.repo, guide.pr.number);
+  if (plan.kind === "found") return { workspace: plan.workspace, notes: [] };
+  if (plan.kind === "fork") return { workspace: null, notes: [FORK_NOTE] };
+  if (plan.kind === "unknown")
+    return { workspace: null, notes: [`Couldn't read the PR's branch: ${plan.reason}`] };
+  if (mode === "never" || (mode === "ask" && choice !== "may-ask"))
+    return { workspace: null, notes: [] };
+  if (mode === "ask") return { ask: { branch: plan.branch } };
+  return p.worktrees.create(guide.pr.repo, guide.pr.number);
+}
+
 /** Opens the stored guide and records the commit the person saw, for "Since your last review". */
-async function openGuide(p: Parts, key: string): Promise<void> {
-  const guide = await requireGuide(p.store, key);
-  await p.opener.open(guide);
+async function openGuide(
+  p: Parts,
+  key: string,
+  choice: OpenChoice = "no-asking",
+): Promise<OpenResult> {
+  const guide = await requireGuide(p.store, p.clones, key);
+  const placed = await placeGuide(p, guide, choice);
+  if ("ask" in placed) return { opened: false, ask: placed.ask };
+  await p.opener.open(guide, placed.workspace ?? undefined);
   const meta = await p.store.meta(key);
   await p.store.setMeta(key, { ...meta, lastViewedCommit: guide.pr.commit });
   patchItem(p.state, key, { newSinceYourReview: false });
   p.state.openKey = key;
   p.publish();
+  return { opened: true, notes: placed.notes };
 }
 
 /** The focused branch's PR, tracked if it is in the queue, else looked up for a manual run. */
@@ -103,6 +138,7 @@ async function focusedKey(p: Parts): Promise<string> {
     team: null,
     requestedAt: Date.parse(details.createdAt) || Date.now(),
     association: null,
+    lastReview: null,
   });
   p.state.tracked.set(key, { ...built, auto: false });
   return key;
@@ -110,6 +146,11 @@ async function focusedKey(p: Parts): Promise<string> {
 
 /** Opens a just-written guide when a command asked for it; a failure to open is only logged. */
 async function openIfAsked(p: Parts, asked: Set<string>, key: string): Promise<void> {
+  const guide = await p.store.guide(key);
+  if (guide)
+    await p.opener
+      .syncCopies(guide)
+      .catch((e: unknown) => p.log(`${key}: could not update the guide's copies: ${message(e)}`));
   if (!asked.delete(key)) return;
   await openGuide(p, key).catch((e: unknown) =>
     p.log(`${key}: could not open the guide: ${message(e)}`),
@@ -167,7 +208,7 @@ const reviewsFor = (p: Parts, refresh: () => Promise<void>): ReviewService =>
   createReviewService({
     store: p.store,
     clones: p.clones,
-    requireGuide: (key) => requireGuide(p.store, key),
+    requireGuide: (key) => requireGuide(p.store, p.clones, key),
     headOf: (key) => p.state.tracked.get(key)?.item.headSha,
     onPending: (key, count) => showPending(p, key, count),
     onPosted: () => void refresh(),
@@ -200,6 +241,7 @@ async function createParts(orca: OrcaWorkerApi) {
     clones,
     focus,
     opener: createOpener({ host: orca.host, clones, log }),
+    worktrees: createPrWorktrees({ host: orca.host, clones, head: prHead }),
     log,
     publish: () => {
       orca.panels.post("queue.changed", queueStateOf(state));
@@ -284,8 +326,8 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     queueState: () => queueStateOf(state),
     publish,
     refresh,
-    requireGuide: (key) => requireGuide(store, key),
-    openGuide: (key) => openGuide(parts, key),
+    requireGuide: (key) => requireGuide(store, clones, key),
+    openGuide: (key, choice) => openGuide(parts, key, choice),
     focusedKey: () => focusedKey(parts),
     generateAndOpen: (key) => {
       openWhenReady.add(key);

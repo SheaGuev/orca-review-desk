@@ -1,22 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f2026"/><stop offset="1" stop-color="#121317"/></linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f7cff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
   </defs>
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
-  <rect x="16.5" y="16.5" width="479" height="479" rx="111.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
-  <!-- the tour route -->
-  <path d="M136 152 V360" stroke="#ffffff" stroke-opacity="0.18" stroke-width="8" stroke-linecap="round"/>
-  <!-- stop 1: done -->
-  <circle cx="136" cy="152" r="24" fill="#4cc38a"/>
-  <path d="M125 152 l8 8 l14 -16" fill="none" stroke="#121317" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="190" y="141" width="150" height="22" rx="11" fill="#ffffff" fill-opacity="0.4"/>
-  <!-- stop 2: you are here, with a finding -->
-  <circle cx="136" cy="256" r="30" fill="#121317" stroke="#ffffff" stroke-width="10"/>
-  <circle cx="136" cy="256" r="11" fill="#ffffff"/>
-  <rect x="190" y="243" width="132" height="26" rx="13" fill="#ffffff" fill-opacity="0.9"/>
-  <rect x="340" y="236" width="80" height="40" rx="10" fill="#f5b941" fill-opacity="0.16" stroke="#f5b941" stroke-width="5"/>
-  <rect x="358" y="251" width="44" height="10" rx="5" fill="#f5b941"/>
-  <!-- stop 3: still to read -->
-  <circle cx="136" cy="360" r="20" fill="#121317" stroke="#ffffff" stroke-opacity="0.35" stroke-width="8"/>
-  <rect x="190" y="349" width="112" height="22" rx="11" fill="#ffffff" fill-opacity="0.25"/>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 170 C222 142 172 132 116 136 V364 C172 360 222 370 256 398 C290 370 340 360 396 364 V136 C340 132 290 142 256 170 Z"/>
+    <path d="M256 170 V398"/>
+  </g>
 </svg>
