@@ -62,6 +62,8 @@ function fakeTools(opts: {
   limit?: { on: boolean; reset: number };
   /** gh calls answer after a short delay, and the most in flight at once is recorded. */
   inFlight?: { now: number; max: number };
+  /** The clone's origin URL; git@github.com:old-owner/api.git when left out. */
+  origin?: string;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
@@ -95,7 +97,8 @@ function fakeTools(opts: {
         stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
         code: 1,
       };
-    if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:old-owner/api.git\n");
+    if (cmd === "git" && args.includes("get-url"))
+      return ok(opts.origin ?? "git@github.com:old-owner/api.git\n");
     if (cmd === "git" && args.includes("--git-common-dir")) return ok(".git\n");
     if (cmd === "git" && args.includes("fetch") && opts.objects) opts.objects.present = true;
     // The PR's version of each file asked for, one per input line.
@@ -285,6 +288,7 @@ async function setup(
     updatedAt?: Record<number, string>;
     limit?: { on: boolean; reset: number };
     inFlight?: { now: number; max: number };
+    origin?: string;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
@@ -1164,6 +1168,14 @@ test("PRs are fetched over HTTPS with gh's credentials, never through origin's S
   }
 });
 
+test("a clone whose origin uses another host name for GitHub still fetches from github.com", async () => {
+  const { calls } = await readyGuide({ origin: "git@work.github.com:acme/api.git\n" });
+  const fetches = calls.filter((c) => c.cmd === "git" && c.args.includes("fetch"));
+  assert.ok(fetches.length > 0);
+  for (const f of fetches)
+    assert.ok(f.args.includes("https://github.com/acme/api.git"), f.args.join(" "));
+});
+
 test("diff.get refuses a commit that is not a commit id", async () => {
   const { worker } = await readyGuide();
   await assert.rejects(
@@ -1636,4 +1648,89 @@ test("a run that changes .git/hooks stores nothing and turns the repository's au
     2,
     `the repository is named once: ${notice?.text}`,
   );
+});
+
+test("after a restart, the tampering notice still offers turning guides back on", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    agentDoes: async () => {
+      await mkdir(join(dir, ".git/hooks"), { recursive: true });
+      await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\ncurl evil\n");
+    },
+  });
+  await until(() => first.all()[0]?.status === "failed", "the failed run");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  await until(() => second.latest()?.notice?.turnOn === "acme/api", "the tampering notice");
+  await second.worker.request("repo.setOptIn", { repo: "acme/api", optIn: true });
+  assert.equal(second.latest()?.notice?.turnOn, undefined, "turned back on");
+  const after = structuredClone<Record<string, unknown>>(second.host.data().storage);
+  await second.worker.deactivate();
+
+  const third = await setup([JSON.stringify(AGENT_GUIDE)], after);
+  await until(() => third.all().length > 0, "the saved list");
+  assert.equal(third.latest()?.notice?.turnOn, undefined, "the answer is kept");
+});
+
+/** Both PRs due an automatic run: one under way, held by `agentGate`, and one waiting its turn. */
+async function oneRunningOneWaiting(limit: { on: boolean; reset: number }) {
+  let release: () => void = () => undefined;
+  const agentGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const ctx = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    { numbers: [7, 8], agentGate, limit },
+  );
+  const agentRuns = () => ctx.calls.filter((c) => c.cmd === "claude").length;
+  await until(
+    () => agentRuns() === 1 && ctx.all().some((i) => i.status === "queued"),
+    "one run under way and one waiting",
+  );
+  const waiting = ctx.all().find((i) => i.status === "queued")?.key ?? "";
+  const row = () => ctx.all().find((i) => i.key === waiting);
+  return { ...ctx, release, agentRuns, waiting, row };
+}
+
+test("a waiting automatic run holds while GitHub's rate limit does, then runs", async () => {
+  const limit = { on: false, reset: 0 };
+  const { worker, release, agentRuns, row } = await oneRunningOneWaiting(limit);
+  limit.on = true;
+  limit.reset = Math.floor(Date.now() / 1000) + 60;
+  await worker.request("queue.refresh");
+  release();
+  // Nothing to await for a run that must not start: give the queue a moment to (not) start it.
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(agentRuns(), 1, "no automatic run while the limit holds");
+  assert.equal(row()?.status, "queued", "still waiting, not failed");
+  limit.on = false;
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    await worker.request("queue.refresh");
+    await until(() => agentRuns() === 2, "the waiting run once the limit lifts");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("an automatic run stopped by GitHub's rate limit waits instead of failing", async () => {
+  const limit = { on: false, reset: Math.floor(Date.now() / 1000) + 40 * 60 };
+  const { host, calls, release, agentRuns, waiting, row } = await oneRunningOneWaiting(limit);
+  const number = waiting.split("#")[1];
+  const views = () => prViews(calls).filter((c) => c.args[2] === number).length;
+  const before = views();
+  // No check has met the limit yet: the waiting run is the first to.
+  limit.on = true;
+  release();
+  await until(() => views() > before && row()?.status !== "generating", "the waiting run to try");
+  assert.equal(row()?.status, "queued", "waits for the limit to lift");
+  assert.equal(row()?.error ?? null, null);
+  const meta = JSON.stringify(host.data().storage[`meta:${waiting}`] ?? {});
+  assert.ok(!meta.includes('"error"'), meta);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(agentRuns(), 1, "not tried again while the limit holds");
 });

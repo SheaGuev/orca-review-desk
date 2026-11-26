@@ -4,7 +4,7 @@
 import { isLockfile } from "./repo";
 import type { Coverage } from "./schema";
 
-/** Characters of diff the prompt may carry; whole files only, so nothing is cut mid-file. */
+/** UTF-8 bytes of diff the prompt may carry; whole files only, so nothing is cut mid-file. */
 export const PROMPT_DIFF_BUDGET = 180_000;
 
 export type FileDiff = {
@@ -149,7 +149,8 @@ const KIND_ORDER: Record<FileKind, number> = { source: 0, config: 1, test: 2, do
 
 /**
  * Whole files for the prompt, most important first (source by change size, then config, tests,
- * docs), until the budget is spent. A file that does not fit is left for the agent to read.
+ * docs), until the budget (UTF-8 bytes) is spent. A file that does not fit is left for the agent
+ * to read.
  */
 export function budgetDiff(
   files: readonly FileDiff[],
@@ -165,9 +166,10 @@ export function budgetDiff(
   const outside: FileDiff[] = [];
   let used = 0;
   for (const f of ranked) {
-    if (used + f.text.length <= budget) {
+    const size = Buffer.byteLength(f.text);
+    if (used + size <= budget) {
       inPrompt.push(f);
-      used += f.text.length;
+      used += size;
     } else outside.push(f);
   }
   return { inPrompt, outside };

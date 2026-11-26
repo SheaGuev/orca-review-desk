@@ -198,8 +198,9 @@ export function buildPrompt(input: PromptInput): string {
 }
 
 /**
- * The prompt for the second round. With a `limit` (argv agents), only the previous reply is cut so
- * the whole prompt fits; the original prompt, the problems and the closing instruction stay whole.
+ * The prompt for the second round. With a `limit` in UTF-8 bytes (argv agents), only the previous
+ * reply is cut, at a character boundary, so the whole prompt fits; the original prompt, the
+ * problems and the closing instruction stay whole.
  */
 export function buildRepairPrompt(
   original: string,
@@ -218,6 +219,12 @@ export function buildRepairPrompt(
   const after =
     "\n\nReply again with ONLY the corrected JSON object. Keep everything that was right.";
   const room =
-    limit === undefined ? 120_000 : Math.max(0, limit - before.length - after.length - 1);
-  return `${before}\n${reply.slice(0, Math.min(120_000, room))}${after}`;
+    limit === undefined
+      ? 120_000
+      : Math.max(0, limit - Buffer.byteLength(before) - Buffer.byteLength(after) - 1);
+  const bytes = Buffer.from(reply);
+  let end = Math.min(120_000, room, bytes.length);
+  // Back off to the start of a character: UTF-8 continuation bytes are 10xxxxxx.
+  while (end > 0 && end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return `${before}\n${bytes.subarray(0, end).toString("utf8")}${after}`;
 }

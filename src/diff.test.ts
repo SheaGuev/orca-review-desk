@@ -128,6 +128,15 @@ test("the budget takes whole files: source by size, then config, tests, docs", (
   );
 });
 
+test("the diff budget counts UTF-8 bytes, as a command line does", () => {
+  // 60 characters, 120 bytes: over a 100 budget.
+  const wide = { ...file("src/wide.ts", 0, 1), text: "é".repeat(60) };
+  assert.deepEqual(
+    budgetDiff([wide], 100).outside.map((f) => f.path),
+    ["src/wide.ts"],
+  );
+});
+
 test("coverage comes from the files the agent read with its tools", () => {
   const stdout = JSON.stringify([
     { type: "system", subtype: "init" },

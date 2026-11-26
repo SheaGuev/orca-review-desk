@@ -11,7 +11,7 @@ import { createClones, type Clones } from "./clones";
 import { fail, message } from "./errors";
 import { loadLoginPath } from "./exec";
 import { createFocus, type Focus } from "./focus";
-import { prDetails, rateLimitReset } from "./github";
+import { prDetails } from "./github";
 import { createGuideRun } from "./guide-run";
 import { createOpener, type Opener } from "./open-guide";
 import { createPrData } from "./pr-data";
@@ -27,6 +27,7 @@ import { createStore, type SavedPr, type Store, type StoredGuide } from "./store
 import { createTourProgress } from "./tour-progress";
 import {
   createWorkerState,
+  holdForRateLimit,
   isRateLimit,
   patchItem,
   queueStateOf,
@@ -39,8 +40,6 @@ import {
 const POLL_MS = 2 * 60_000;
 /** A restart this soon after the last check lists the saved PRs and leaves checking to the poll. */
 const RECENT_CHECK_MS = 2 * 60_000;
-/** Waits after checks hit the rate limit in a row, when GitHub gives no reset time. */
-const RATE_LIMIT_BACKOFF_MS = [5, 10, 20, 40, 60].map((m) => m * 60_000);
 /** Guides of PRs that left the queue are forgotten after this long. */
 const KEEP_GUIDES_MS = 14 * 24 * 60 * 60_000;
 
@@ -126,25 +125,6 @@ function showPending(p: Parts, key: string, count: number): void {
 }
 
 /**
- * After a check hit the rate limit: automatic checks wait until GitHub's reset for the resources
- * used up, else for a backoff that grows with each limited check in a row.
- */
-async function holdForRateLimit(state: WorkerState): Promise<void> {
-  const strikes = (state.rateLimit?.strikes ?? 0) + 1;
-  const reset = await rateLimitReset();
-  const now = Date.now();
-  // A reset already past says nothing about when the limit lifts.
-  state.rateLimit =
-    reset !== null && reset > now
-      ? { resumeAt: reset, fromGitHub: true, strikes }
-      : {
-          resumeAt: now + (RATE_LIMIT_BACKOFF_MS[strikes - 1] ?? RATE_LIMIT_BACKOFF_MS.at(-1) ?? 0),
-          fromGitHub: false,
-          strikes,
-        };
-}
-
-/**
  * `refresh`: one check of GitHub at a time, shared by everyone who asks meanwhile. Each check
  * then queues the automatic runs now due (`afterCheck`) and forgets guides long gone.
  */
@@ -200,6 +180,7 @@ async function createParts(orca: OrcaWorkerApi) {
   const store = createStore(orca.storage);
   const settingsNow = async () => readSettings(await orca.settings.get());
   const state = createWorkerState(await settingsNow(), await store.runsToday());
+  state.tampered = await store.tampered();
   const clones = createClones(async () => (await orca.host.call("project.list")).projects);
   const prData = createPrData({
     log,

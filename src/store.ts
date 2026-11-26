@@ -25,6 +25,9 @@ export type Meta = {
   errorCommit?: string;
 };
 
+/** The last run that changed its clone's git config or hooks, kept until its repo is turned on. */
+export type Tampered = { key: string; repo: string; paths: string[] };
+
 /** The local date, so the daily limit resets at the person's midnight, not UTC's. */
 export const localDay = (at = new Date()): string => at.toLocaleDateString("en-CA");
 
@@ -131,6 +134,12 @@ function asLastCheck(v: unknown): LastCheck | null {
   return prs.every((p) => p !== null) ? { checkedAt: v.checkedAt, prs } : null;
 }
 
+function asTampered(v: unknown): Tampered | null {
+  if (!isObj(v) || !isString(v.key) || !isString(v.repo) || !Array.isArray(v.paths)) return null;
+  const paths = v.paths.filter(isString);
+  return { key: v.key, repo: v.repo, paths };
+}
+
 export type Store = ReturnType<typeof createStore>;
 
 /** Automatic runs counted so far today. */
@@ -205,6 +214,9 @@ export function createStore(storage: Storage) {
     },
     lastCheck: async (): Promise<LastCheck | null> => asLastCheck(await storage.get("lastCheck")),
     setLastCheck: (value: LastCheck): Promise<void> => storage.set("lastCheck", plainJson(value)),
+    tampered: async (): Promise<Tampered | null> => asTampered(await storage.get("tampered")),
+    setTampered: (value: Tampered | null): Promise<void> =>
+      value ? storage.set("tampered", plainJson(value)) : storage.delete("tampered"),
     prune: (tracked: (key: string) => boolean, cutoff: number): Promise<void> =>
       prune(storage, tracked, cutoff),
   };

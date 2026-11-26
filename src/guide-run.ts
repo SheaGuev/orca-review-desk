@@ -11,7 +11,7 @@ import { parsePrKey } from "./repo";
 import { RISK_WORD, withoutDetail, type PrGuide } from "./schema";
 import type { Store } from "./store";
 import type { TourProgress } from "./tour-progress";
-import { patchItem, type WorkerState } from "./worker-state";
+import { holdForRateLimit, isRateLimit, patchItem, type WorkerState } from "./worker-state";
 import { writeGuide } from "./write-guide";
 
 /** Orca refuses a storage value over 256 KiB; leave room for the key and encoding. */
@@ -110,14 +110,14 @@ async function finish(
 
 /**
  * A run changed its clone's git config or hooks: automatic runs stop for the whole repository
- * (stored, so a restart keeps them off) until the person turns it back on.
+ * (stored, with the notice, so a restart keeps both) until the person turns it back on.
  */
 async function stopAutomatic(deps: Deps, key: string, paths: readonly string[]): Promise<void> {
   const { state, store } = deps;
   const repo = parsePrKey(key)?.repo;
   if (!repo) return;
-  await store.setOptIn(repo, false);
-  state.tampered = { key, repo, paths };
+  state.tampered = { key, repo, paths: [...paths] };
+  await Promise.all([store.setOptIn(repo, false), store.setTampered(state.tampered)]);
   const known = state.repos.get(repo);
   if (known) state.repos.set(repo, { ...known, optIn: false });
   for (let i = state.queued.length - 1; i >= 0; i--) {
@@ -156,6 +156,17 @@ async function fail(
   patchItem(state, key, { status: "failed", error });
 }
 
+/**
+ * An automatic run a `gh` call stopped at GitHub's rate limit (not the agent's own limit): no
+ * failure, but back at the front of the queue, held with every automatic run until it lifts.
+ */
+async function waitForRateLimit(deps: Deps, key: string, error: string): Promise<void> {
+  deps.log(`${key}: ${error}; waiting for GitHub's rate limit to lift`);
+  await holdForRateLimit(deps.state);
+  deps.state.queued.unshift({ key, automatic: true });
+  patchItem(deps.state, key, { status: "queued", error: null });
+}
+
 export function createGuideRun(deps: Deps): (key: string, automatic: boolean) => Promise<void> {
   return async function generate(key, automatic) {
     const headBefore = deps.state.tracked.get(key)?.item.headSha;
@@ -163,8 +174,11 @@ export function createGuideRun(deps: Deps): (key: string, automatic: boolean) =>
     try {
       await finish(deps, key, await write(deps, key), automatic);
     } catch (e) {
+      const error = message(e);
       // The worker is going away: a stopped run is no failure, and storage may be gone already.
       if (deps.signal.aborted) deps.log(`${key}: stopped with the worker`);
+      else if (automatic && error.startsWith("gh ") && isRateLimit(error))
+        await waitForRateLimit(deps, key, error);
       else await fail(deps, key, e, headBefore, harness);
     } finally {
       deps.publish();

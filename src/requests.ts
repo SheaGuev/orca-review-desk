@@ -133,7 +133,10 @@ function registerQueue(orca: OrcaWorkerApi, api: WorkerApi): void {
   orca.panels.handle("repo.setOptIn", async ({ repo, optIn }) => {
     await api.store.setOptIn(repo, optIn);
     // Turning a repository back on is the person's answer to a run that changed its git files.
-    if (optIn && api.state.tampered?.repo === repo) api.state.tampered = null;
+    if (optIn && api.state.tampered?.repo === repo) {
+      api.state.tampered = null;
+      await api.store.setTampered(null);
+    }
     return refreshed();
   });
   orca.panels.handle("lane.showAuthored", async ({ show }) => {

@@ -151,7 +151,7 @@ async function askAgent(
   const second = await runAgent(
     harness,
     model,
-    buildRepairPrompt(prompt, first.text, firstRead.problems, AGENTS[harness].maxPromptChars),
+    buildRepairPrompt(prompt, first.text, firstRead.problems, AGENTS[harness].maxPromptBytes),
     req.clone.path,
     req.signal,
   );
@@ -283,8 +283,8 @@ async function prepareRun(
 }
 
 /**
- * The prompt's length without any diff: every file listed as left out, the most the rest of the
- * prompt can take, so the diff budget of an argv agent leaves room for it.
+ * The prompt's UTF-8 bytes without any diff: every file listed as left out, the most the rest of
+ * the prompt can take, so the diff budget of an argv agent leaves room for it.
  */
 function promptOverhead(
   input: Omit<PromptInput, "inPrompt" | "outside" | "run">,
@@ -292,7 +292,9 @@ function promptOverhead(
 ): number {
   const dir = runDir(input.pr.number);
   const diffs = new Map(files.map((f) => [f.path, `${dir}/diffs/0000.diff`]));
-  return buildPrompt({ ...input, inPrompt: [], outside: [...files], run: { dir, diffs } }).length;
+  return Buffer.byteLength(
+    buildPrompt({ ...input, inPrompt: [], outside: [...files], run: { dir, diffs } }),
+  );
 }
 
 async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {

@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { linesByFile, splitDiff, type FileDiff } from "./diff";
 import { run, runOk } from "./exec";
-import { githubHost, LOCKFILES, repoSlugFromRemote } from "./repo";
+import { LOCKFILES, repoSlugFromRemote } from "./repo";
 import { GUIDES, RUNS } from "./run-files";
 import type { DiffContext } from "./schema";
 
@@ -42,8 +42,9 @@ export async function originSlug(path: string): Promise<string | null> {
  * Fetches the PR's head and base into `prRefs`, over HTTPS from `repo` (`owner/repo`, the PR's
  * own, not origin's, which may be an old name or a fork) with gh's credentials. Never through
  * origin: an ssh key that asks for approval on each use (Touch ID) fails in a background run.
- * The empty `credential.helper=` drops any other helper, so no keychain prompt either. The host is
- * origin's, for GitHub Enterprise.
+ * The empty `credential.helper=` drops any other helper, so no keychain prompt either. Always
+ * github.com, whatever host name origin uses for it (an ssh alias, `ssh.github.com`): only
+ * github.com clones are matched to PRs.
  */
 export async function fetchPr(
   clone: Clone,
@@ -52,7 +53,6 @@ export async function fetchPr(
   signal?: AbortSignal,
 ): Promise<PrRefs> {
   const refs = prRefs(pr.number);
-  const host = githubHost((await originUrl(clone.path)) ?? "");
   await runOk(
     "git",
     [
@@ -65,7 +65,7 @@ export async function fetchPr(
       "fetch",
       "--no-tags",
       "--quiet",
-      `https://${host}/${repo}.git`,
+      `https://github.com/${repo}.git`,
       `+refs/pull/${pr.number}/head:${refs.head}`,
       `+refs/heads/${pr.baseRefName}:${refs.base}`,
     ],

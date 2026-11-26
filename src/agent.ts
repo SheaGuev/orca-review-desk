@@ -33,7 +33,7 @@ export type AgentSpec = AgentNames & {
    * (`argvPromptBytes`), so the diff budget shrinks to fit and a longer prompt is refused before
    * the CLI runs.
    */
-  maxPromptChars?: number;
+  maxPromptBytes?: number;
   /** Headless, read-only tools only. */
   args: (p: ArgsInput) => string[];
   /** Variables the agent needs (auth, config), kept by the clean environment; `*` ends a prefix. */
@@ -64,9 +64,9 @@ export const argvPromptBytes = (platform: NodeJS.Platform): number =>
 const ARGV_PROMPT_BYTES = argvPromptBytes(process.platform);
 /**
  * Room an argv agent's diff budget keeps for the repair round, which repeats the prompt and adds
- * the previous reply (cut to fit by `buildRepairPrompt`).
+ * the previous reply (cut to fit by `buildRepairPrompt`), in UTF-8 bytes.
  */
-export const REPAIR_REPLY_CHARS = 40_000;
+export const REPAIR_REPLY_BYTES = 40_000;
 
 const tail = (text: string) => text.trim().split("\n").slice(-4).join(" ").slice(0, 400);
 
@@ -207,7 +207,7 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     binary: "cursor-agent",
     verified: false,
     promptDelivery: "argv",
-    maxPromptChars: ARGV_PROMPT_BYTES,
+    maxPromptBytes: ARGV_PROMPT_BYTES,
     // `--mode ask` is read-only Q&A; MCP servers need `--approve-mcps`, never passed. No flag
     // skips the clone's `.cursor/rules`, AGENTS.md and CLAUDE.md: those always load.
     args: ({ model, prompt }) => [
@@ -228,7 +228,7 @@ export const AGENTS: Record<AgentId, AgentSpec> = {
     binary: "copilot",
     verified: false,
     promptDelivery: "argv",
-    maxPromptChars: ARGV_PROMPT_BYTES,
+    maxPromptBytes: ARGV_PROMPT_BYTES,
     args: ({ model, prompt }) => [
       "--prompt",
       prompt,
@@ -363,15 +363,14 @@ export function agentEnv(id: AgentId): Record<string, string> {
 }
 
 /**
- * Characters of diff the prompt may carry for this agent, given the rest of the prompt
- * (`overhead`): argv agents fit the whole prompt in one argument, with room left for the repair
- * round's previous reply. The byte limit serves as the character budget: a character is at least
- * one byte, and a prompt that is still over in bytes is refused before the CLI runs.
+ * UTF-8 bytes of diff the prompt may carry for this agent, given the bytes the rest of the prompt
+ * takes (`overhead`): argv agents fit the whole prompt in one argument, with room left for the
+ * repair round's previous reply.
  */
 export function diffBudget(id: AgentId, overhead: number): number {
-  const max = AGENTS[id].maxPromptChars;
+  const max = AGENTS[id].maxPromptBytes;
   if (max === undefined) return PROMPT_DIFF_BUDGET;
-  return Math.max(0, Math.min(PROMPT_DIFF_BUDGET, max - overhead - REPAIR_REPLY_CHARS));
+  return Math.max(0, Math.min(PROMPT_DIFF_BUDGET, max - overhead - REPAIR_REPLY_BYTES));
 }
 
 /** The agent's CLI is not on the PATH the worker runs it with. */
@@ -394,7 +393,7 @@ export async function runAgent(
   signal?: AbortSignal,
 ): Promise<AgentReply> {
   const spec = AGENTS[id];
-  const max = spec.maxPromptChars;
+  const max = spec.maxPromptBytes;
   const bytes = Buffer.byteLength(prompt, "utf8");
   if (spec.promptDelivery === "argv" && max !== undefined && bytes > max)
     throw new Error(

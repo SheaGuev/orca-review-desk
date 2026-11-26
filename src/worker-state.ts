@@ -2,10 +2,12 @@
 // the panel's one notice line is made from. One object, so each part of the worker says which of
 // it it reads and changes.
 import type { AgentId } from "./agent-names";
+import { rateLimitReset } from "./github";
 import type { Notice, QueueItem, QueueState, RepoState } from "./protocol";
 import { buildQueue } from "./queue";
 import type { RunState, Tracked } from "./queue-items";
 import { agentLabel, harnessName, type Settings } from "./settings";
+import type { Tampered } from "./store";
 
 /** A run waiting its turn, with how it was started: only automatic ones count against the daily limit. */
 export type QueuedRun = { key: string; automatic: boolean };
@@ -41,8 +43,8 @@ export type WorkerState = {
   agentMissing: AgentId | null;
   /** QueueState.openKey: the guide last opened or moved through. */
   openKey: string | null;
-  /** The last run that changed its clone's git config or hooks; cleared when its repo is turned on. */
-  tampered: { key: string; repo: string; paths: readonly string[] } | null;
+  /** The last run that changed its clone's git config or hooks (stored); cleared when its repo is turned on. */
+  tampered: Tampered | null;
 };
 
 export const createWorkerState = (settings: Settings, runsToday: number): WorkerState => ({
@@ -80,6 +82,28 @@ export const isRateLimit = (error: string): boolean => /rate limit/i.test(error)
 /** Whether automatic checks and runs wait for GitHub's rate limit to lift. */
 export const rateLimited = (state: WorkerState): boolean =>
   state.rateLimit !== null && Date.now() < state.rateLimit.resumeAt;
+
+/** Waits after checks hit the rate limit in a row, when GitHub gives no reset time. */
+const RATE_LIMIT_BACKOFF_MS = [5, 10, 20, 40, 60].map((m) => m * 60_000);
+
+/**
+ * After a check or run hit the rate limit: automatic checks and runs wait until GitHub's reset
+ * for the resources used up, else for a backoff that grows with each limit met in a row.
+ */
+export async function holdForRateLimit(state: WorkerState): Promise<void> {
+  const strikes = (state.rateLimit?.strikes ?? 0) + 1;
+  const reset = await rateLimitReset();
+  const now = Date.now();
+  // A reset already past says nothing about when the limit lifts.
+  state.rateLimit =
+    reset !== null && reset > now
+      ? { resumeAt: reset, fromGitHub: true, strikes }
+      : {
+          resumeAt: now + (RATE_LIMIT_BACKOFF_MS[strikes - 1] ?? RATE_LIMIT_BACKOFF_MS.at(-1) ?? 0),
+          fromGitHub: false,
+          strikes,
+        };
+}
 
 const clock = (ms: number): string =>
   new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

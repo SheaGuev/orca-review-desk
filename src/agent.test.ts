@@ -3,7 +3,7 @@ import { afterEach, assert, test } from "orca/testing";
 import {
   AGENTS,
   AgentMissing,
-  REPAIR_REPLY_CHARS,
+  REPAIR_REPLY_BYTES,
   agentCommand,
   argvPromptBytes,
   diffBudget,
@@ -390,16 +390,16 @@ test("argv agents get a smaller diff budget that leaves room for the rest of the
   for (const [id, spec] of Object.entries(AGENTS)) {
     if (spec.promptDelivery === "argv")
       assert.ok(
-        spec.maxPromptChars !== undefined && spec.maxPromptChars <= 128 * 1024,
+        spec.maxPromptBytes !== undefined && spec.maxPromptBytes <= 128 * 1024,
         `${id} has no prompt limit under Linux's 128 KB per argument`,
       );
-    else assert.equal(spec.maxPromptChars, undefined, `${id} reads stdin, so has no limit`);
+    else assert.equal(spec.maxPromptBytes, undefined, `${id} reads stdin, so has no limit`);
   }
   assert.equal(diffBudget("claude", 20_000), PROMPT_DIFF_BUDGET);
   assert.equal(diffBudget("codex", 500_000), PROMPT_DIFF_BUDGET);
-  const max = AGENTS.cursor.maxPromptChars ?? 0;
+  const max = AGENTS.cursor.maxPromptBytes ?? 0;
   // Room is left for the repair round's previous reply, so that prompt fits one argument too.
-  assert.ok(diffBudget("cursor", 20_000) + 20_000 + REPAIR_REPLY_CHARS <= max);
+  assert.ok(diffBudget("cursor", 20_000) + 20_000 + REPAIR_REPLY_BYTES <= max);
   assert.equal(diffBudget("copilot", max + 1), 0, "never below nothing");
 });
 
@@ -470,7 +470,7 @@ test("an argv prompt over the agent's limit fails with a clear reason, without r
     },
     () => true,
   );
-  const max = AGENTS.cursor.maxPromptChars ?? 0;
+  const max = AGENTS.cursor.maxPromptBytes ?? 0;
   await assert.rejects(
     runAgent("cursor", "", "x".repeat(max + 1), "/repo"),
     /too long for Cursor's command line/,
@@ -481,7 +481,7 @@ test("an argv prompt over the agent's limit fails with a clear reason, without r
 test("the repair prompt fits a limit by cutting the previous reply, never the instructions", () => {
   const original = "o".repeat(50_000);
   const reply = "r".repeat(120_000);
-  const limit = 50_000 + REPAIR_REPLY_CHARS;
+  const limit = 50_000 + REPAIR_REPLY_BYTES;
   const repair = buildRepairPrompt(original, reply, ["title: over 12 words"], limit);
   assert.ok(repair.length <= limit, `${repair.length} > ${limit}`);
   assert.ok(repair.startsWith(original));
@@ -489,6 +489,17 @@ test("the repair prompt fits a limit by cutting the previous reply, never the in
   assert.ok(repair.endsWith("Keep everything that was right."));
   // Without a limit, nothing changes.
   assert.ok(buildRepairPrompt(original, reply, []).includes("r".repeat(120_000)));
+});
+
+test("the repair prompt fits a byte limit when the text holds multi-byte characters", () => {
+  const original = "o—".repeat(20_000);
+  const reply = "r—".repeat(60_000);
+  const limit = Buffer.byteLength(original) + REPAIR_REPLY_BYTES;
+  const repair = buildRepairPrompt(original, reply, ["title: over 12 words — too long"], limit);
+  assert.ok(Buffer.byteLength(repair) <= limit, `${Buffer.byteLength(repair)} > ${limit} bytes`);
+  assert.ok(repair.startsWith(original));
+  assert.ok(repair.endsWith("Keep everything that was right."));
+  assert.ok(!repair.includes("\uFFFD"), "no character cut in half");
 });
 
 test("an argv prompt fits the platform's command line, counted in bytes", async () => {
