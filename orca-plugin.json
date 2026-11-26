@@ -3,7 +3,7 @@
   "manifestVersion": 2,
   "id": "pr-tour",
   "name": "PR Tour",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Understand a PR, then tour its diff in the order that explains it. For each PR waiting on you, your agent writes a guide: what, why and the impact, risk and findings, a stop-by-stop tour, and a review you post to GitHub.",
   "repository": "https://github.com/adamthewilliam/orca-pr-tour",
   "icon": "assets/icon.png",
