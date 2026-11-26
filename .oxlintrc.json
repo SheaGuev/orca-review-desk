@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "unicorn", "oxc", "import", "promise"],
+  // Shiki's bundle, as built by scripts/vendor-shiki.ts.
+  "ignorePatterns": ["editor/vendor/**"],
   "options": { "typeAware": true },
   "categories": {
     "correctness": "error",

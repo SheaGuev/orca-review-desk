@@ -12,6 +12,7 @@ import {
 import type { DraftComment } from "../src/review";
 import type { Finding } from "../src/schema";
 import { h, prose } from "./dom";
+import type { RowTokens, Tok } from "./highlight";
 import { paragraphs, plural, SEVERITY_LABEL } from "./parts";
 import type { Review } from "./review";
 
@@ -57,17 +58,42 @@ const plusButton = (line: number): HTMLElement =>
     ),
   );
 
-/** A line's text, with its changed words wrapped so they stand out (still text nodes only). */
-function codeText(text: string, marks: readonly Span[] | undefined): (string | HTMLElement)[] {
-  if (!marks?.length) return [text];
-  const parts: (string | HTMLElement)[] = [];
-  let at = 0;
-  for (const [start, end] of marks) {
-    if (start > at) parts.push(text.slice(at, start));
-    parts.push(h("span", { class: "word" }, text.slice(start, end)));
-    at = end;
+/** A run of code text, coloured per code theme through CSS variables the stylesheet picks from. */
+function tokNode(text: string, tok: Tok | undefined): string | HTMLElement {
+  if (!tok) return text;
+  const el = h("span", { class: "tok" }, text);
+  for (const [id, s] of Object.entries(tok.styles)) {
+    if (s.color) el.style.setProperty(`--tc-${id}`, s.color);
+    if (s.italic) el.style.setProperty(`--ti-${id}`, "italic");
+    if (s.bold) el.style.setProperty(`--tb-${id}`, "600");
   }
-  if (at < text.length) parts.push(text.slice(at));
+  return el;
+}
+
+/**
+ * A line's text in its syntax colours, with its changed words wrapped so they stand out (still
+ * text nodes only). The text is cut wherever a colour run or a changed word starts or ends.
+ */
+function codeText(
+  text: string,
+  marks: readonly Span[] | undefined,
+  toks: readonly Tok[] | undefined,
+): (string | HTMLElement)[] {
+  if (!marks?.length && !toks?.length) return [text];
+  const cuts = new Set([0, text.length]);
+  for (const [start, end] of marks ?? []) cuts.add(start).add(end);
+  for (const t of toks ?? []) cuts.add(t.start).add(t.end);
+  const at = [...cuts].filter((c) => c <= text.length).sort((a, b) => a - b);
+  const parts: (string | HTMLElement)[] = [];
+  for (let k = 0; k + 1 < at.length; k++) {
+    const [from = 0, to = 0] = [at[k], at[k + 1]];
+    const piece = tokNode(
+      text.slice(from, to),
+      toks?.find((t) => t.start <= from && to <= t.end),
+    );
+    const marked = marks?.some(([start, end]) => start <= from && to <= end);
+    parts.push(marked ? h("span", { class: "word" }, piece) : piece);
+  }
   return parts;
 }
 
@@ -79,6 +105,7 @@ export function rowNode(
   r: DiffRow,
   canComment: (line: number) => boolean,
   marks?: readonly Span[],
+  toks?: readonly Tok[],
 ): HTMLElement {
   if (r.kind === "hunk")
     return h(
@@ -105,7 +132,7 @@ export function rowNode(
       r.new !== null && canComment(r.new) ? plusButton(r.new) : h("span", { class: "plus-space" }),
       h("span", { class: "sign" }, SIGN[r.kind]),
     ),
-    h("span", { class: "code" }, ...codeText(r.text, marks)),
+    h("span", { class: "code" }, ...codeText(r.text, marks, toks)),
   );
 }
 
@@ -253,6 +280,7 @@ function wordsOf(rows: readonly DiffRow[]): Map<number, Span[]> {
 export function renderPieces(
   pieces: readonly FocusPiece[],
   rows: readonly DiffRow[],
+  tokens: RowTokens,
   canComment: (line: number) => boolean,
 ): { nodes: DocumentFragment; rowEl: Map<number, HTMLElement> } {
   const rowEl = new Map<number, HTMLElement>();
@@ -265,7 +293,7 @@ export function renderPieces(
       continue;
     }
     part.forEach((r, k) => {
-      const row = rowNode(r, canComment, words.get(p.from + k));
+      const row = rowNode(r, canComment, words.get(p.from + k), tokens.get(p.from + k));
       if (isLineRow(r) && r.new !== null) rowEl.set(r.new, row);
       nodes.append(row);
     });

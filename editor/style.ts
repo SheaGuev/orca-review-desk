@@ -2,6 +2,7 @@
 import { CATEGORIES } from "../src/breakdown/categories";
 import { CATEGORY_COLORS, GIT_COLORS, type Mode } from "../src/breakdown/colors";
 import { ICON_PALETTE } from "../src/breakdown/icons/palette";
+import { CODE_THEMES } from "./code-themes";
 
 /** Changes uses Diff Breakdown's colours: categories, git's modified, and Catppuccin for icons. */
 const ICON_FLAVOURS: Record<Mode, keyof typeof ICON_PALETTE> = { dark: "mocha", light: "latte" };
@@ -454,4 +455,9 @@ html.w-narrow .rows > li.claim, html.w-narrow .point { grid-template-columns: 1f
 html.w-narrow .finding-row { grid-template-columns: minmax(0, 1fr) auto; }
 html.w-narrow .finding-row > .stack-xs { grid-column: 1 / -1; grid-row: 2; }
 html.w-narrow .review-bar { padding-left: 16px; }
+.code-theme-btn { position: fixed; right: 16px; bottom: calc(var(--bar-h, 0px) + 12px); z-index: 4; }
+${CODE_THEMES.map(
+  ({ id }) =>
+    `html[data-code-theme="${id}"] .dl .code .tok { color: var(--tc-${id}, inherit); font-style: var(--ti-${id}, normal); font-weight: var(--tb-${id}, inherit); }`,
+).join("\n")}
 `;

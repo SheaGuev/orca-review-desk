@@ -16,6 +16,7 @@ import {
   type Note,
 } from "./diff-rows";
 import { h } from "./dom";
+import type { RowTokens } from "./highlight";
 import { plural } from "./parts";
 import { cardOf, type Review } from "./review";
 
@@ -43,6 +44,8 @@ export type View = {
   current: string | null;
   data: DiffFile | null;
   rows: DiffRow[];
+  /** Syntax colours of `rows`, empty until highlighted or for a language the guide doesn't colour. */
+  tokens: RowTokens;
   /** Focused hunks, or the whole file once Full file is on (or when there is no focus). */
   full: boolean;
   pieces: FocusPiece[];
@@ -78,6 +81,7 @@ export function drawBody(v: View): void {
   const drawn = renderPieces(
     visiblePieces(v),
     v.rows,
+    v.tokens,
     // Whether GitHub takes a comment on that PR-head line of the file shown.
     (line) => v.review !== null && v.current !== null && v.review.canComment(v.current, line),
   );

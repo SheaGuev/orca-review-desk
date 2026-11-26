@@ -20,6 +20,7 @@ import {
 import { buildFrame } from "./diff-frame";
 import { notice } from "./diff-rows";
 import { h } from "./dom";
+import { tokensFor, type RowTokens } from "./highlight";
 import type { Review } from "./review";
 
 export type DiffViewOptions = {
@@ -73,6 +74,7 @@ function emptyView(opts: DiffViewOptions): View {
     current: null,
     data: null,
     rows: [],
+    tokens: new Map(),
     full: focus === null,
     pieces: [],
     revealed: new Set(),
@@ -90,6 +92,7 @@ function reset(v: View, path: string): void {
   v.current = path;
   v.data = null;
   v.rows = [];
+  v.tokens = new Map();
   v.pieces = [];
   v.revealed.clear();
   v.limit = RENDER_FIRST;
@@ -100,10 +103,30 @@ function reset(v: View, path: string): void {
   v.frame.moreBox.replaceChildren();
 }
 
+/** How long a loaded diff waits for its colours before it is drawn plain and coloured after. */
+const HIGHLIGHT_WAIT_MS = 250;
+
+/** Colours `loaded` once they arrive late, unless the view moved on or a composer is open. */
+async function colourLate(v: View, loaded: DiffFile, tokens: Promise<RowTokens>): Promise<void> {
+  const t = await tokens;
+  if (v.data !== loaded || !t.size || v.tokens.size) return;
+  if (v.lineComposer || v.fileComposer) return;
+  v.tokens = t;
+  drawBody(v);
+  drawNotes(v);
+}
+
 /** Takes the loaded diff into the view and draws it, opened far enough to include `line`. */
-function drawLoaded(v: View, path: string, loaded: DiffFile, line: number | null): void {
+function drawLoaded(
+  v: View,
+  path: string,
+  loaded: DiffFile,
+  line: number | null,
+  tokens: RowTokens | null,
+): void {
   v.data = loaded;
   v.rows = diffRows(loaded.lines);
+  v.tokens = tokens ?? new Map();
   const focused = focusPieces(v.rows, v.focus);
   v.pieces = focused.pieces;
   // Ranges that land on no row (the file changed under the guide) show the whole file.
@@ -191,8 +214,16 @@ async function show(c: Shown, path: string, line: number | null): Promise<void> 
   fileBox.replaceChildren(notice("Loading the diff…"));
   const loaded = await c.opts.load(path).catch((e: unknown) => ({ failed: e }));
   if (run !== c.seq) return;
-  if ("failed" in loaded) showFailure(c, path, line, loaded.failed);
-  else drawLoaded(v, path, loaded, line);
+  if ("failed" in loaded) {
+    showFailure(c, path, line, loaded.failed);
+    return;
+  }
+  const colours = tokensFor(loaded);
+  const timeout = new Promise<null>((done) => setTimeout(() => done(null), HIGHLIGHT_WAIT_MS));
+  const tokens = await Promise.race([colours, timeout]);
+  if (run !== c.seq) return;
+  drawLoaded(v, path, loaded, line, tokens);
+  if (tokens === null) void colourLate(v, loaded, colours);
 }
 
 /** The header's toggle and actions, and the rows' comment buttons. */

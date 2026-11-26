@@ -33,6 +33,7 @@ import {
 } from "../src/tour";
 import { h } from "./dom";
 import { startReview, type Review } from "./review";
+import { codeThemeButton } from "./code-theme";
 import { STYLE } from "./style";
 import { draw, type FocusTarget, type LineTarget, type TourContext } from "./tour";
 
@@ -51,6 +52,7 @@ function announce(text: string): void {
 }
 
 const html = document.documentElement;
+document.body.append(codeThemeButton(html));
 /** Tab widths where the layout changes: overview columns and the stop menu, then the rail. */
 const COLUMNS_MIN = 1100;
 const RAIL_MIN = 1400;

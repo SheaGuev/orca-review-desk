@@ -197,6 +197,23 @@
         "maxLength": 2000,
         "multiline": true,
         "placeholder": "e.g. Call out any change to money movement or KYC."
+      },
+      {
+        "key": "codeTheme",
+        "title": "Code colors",
+        "description": "Syntax colors in the guide's diffs. The button in the guide tab's corner switches them too.",
+        "type": "string",
+        "default": "cursor-dark",
+        "enum": [
+          "cursor-dark",
+          "armada",
+          "none"
+        ],
+        "enumLabels": [
+          "Cursor Dark",
+          "Armada",
+          "No colors"
+        ]
       }
     ]
   },

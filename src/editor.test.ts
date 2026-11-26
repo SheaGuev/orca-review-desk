@@ -75,6 +75,11 @@ test("a review goes from the overview through a stop to a posted review", async 
       host: { has: () => false },
       on: () => undefined,
       shell: { openExternal: () => undefined },
+      settings: {
+        get: async () => undefined,
+        set: async () => undefined,
+        onDidChange: () => ({ dispose: () => undefined }),
+      },
       document: {
         session: () =>
           Promise.resolve({

@@ -81,6 +81,11 @@ test("Since your last review is one line, with the changed files behind Show cha
       host: { has: () => false },
       on: () => undefined,
       shell: { openExternal: () => undefined },
+      settings: {
+        get: async () => undefined,
+        set: async () => undefined,
+        onDidChange: () => ({ dispose: () => undefined }),
+      },
       document: {
         session: () =>
           Promise.resolve({
