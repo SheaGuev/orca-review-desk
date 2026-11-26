@@ -204,10 +204,51 @@ const optIn: QueueState = {
   ]),
 };
 
-const withNotice = (text: string, tone: "warning" | "danger"): QueueState => ({
+const withNotice = (text: string, tone: "warning" | "danger", turnOn?: string): QueueState => ({
   ...queue,
-  notice: { tone, text },
+  notice: turnOn ? { tone, text, turnOn } : { tone, text },
 });
+
+/** Automatic runs skip authors without write access, and authors GitHub couldn't vouch for. */
+const untrusted: QueueState = {
+  ...base,
+  repos: [{ repo: "acme/api", optIn: true, hasClone: true, pending: 0 }],
+  ...buildQueue([
+    item({
+      key: "acme/api#44001",
+      number: 44001,
+      title: "Fix a typo in the README",
+      author: "drive-by",
+      status: "none",
+      risk: null,
+      newSinceYourReview: false,
+      manualReason: "Author is not a collaborator",
+    }),
+    item({
+      key: "acme/api#44002",
+      number: 44002,
+      title: "Cache the feature flag lookups",
+      author: "pat",
+      status: "none",
+      risk: null,
+      newSinceYourReview: false,
+      manualReason: "Couldn't check the author's access",
+    }),
+  ]),
+};
+
+/** The run's reply held a credential, so nothing was stored. */
+const secretFailed: QueueState = {
+  ...base,
+  ...buildQueue([
+    item({
+      status: "failed",
+      risk: null,
+      newSinceYourReview: false,
+      error: "The agent's reply holds what looks like a GitHub token, so the guide was not stored.",
+    }),
+  ]),
+};
 
 const answer = (state: QueueState) => ({ "queue.get": state, "queue.refresh": state });
 
@@ -220,11 +261,30 @@ export default defineCheck({
   offline: {
     requests: answer(withNotice("Couldn't reach GitHub · last checked 14:02", "warning")),
   },
+  rateLimited: {
+    requests: answer(withNotice("GitHub rate limit reached · last checked 14:02", "warning")),
+  },
   limit: {
     requests: answer(
       withNotice("Automatic guides paused until tomorrow · Generate still works", "warning"),
     ),
   },
+  notInstalled: {
+    requests: answer(
+      withNotice("Claude Code isn't installed · install it, then Generate", "danger"),
+    ),
+  },
+  tampered: {
+    requests: answer(
+      withNotice(
+        "The run for #43841 changed .git/hooks/pre-commit in acme/api · automatic guides are off until you have checked the clone",
+        "danger",
+        "acme/api",
+      ),
+    ),
+  },
+  untrusted: { requests: answer(untrusted) },
+  secretFailed: { requests: answer(secretFailed) },
   signedOut: {
     requests: answer(
       withNotice("Claude Code is not signed in · sign in from a terminal, then Generate", "danger"),

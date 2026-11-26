@@ -22,14 +22,15 @@ orca plugin dev request . queue.refresh --json
 
 ## How a guide gets made
 
-1. **Find PRs.** Every 5 minutes the worker asks GitHub through `gh` for PRs requesting your
+1. **Find PRs.** Every 2 minutes the worker asks GitHub through `gh` for PRs requesting your
    review (`user-review-requested:@me`), your teams' PRs, and optionally your own.
 2. **Decide.** In a repository you turned on, direct requests get a guide, and team requests do
    when they pass the filter. Drafts and lockfile-only PRs are skipped. Automatic runs stop at the
    daily limit, which resets at local midnight.
 3. **Fetch and prompt.** The PR is fetched into `refs/pr-tour/*`. Whole per-file diffs go in the
    prompt up to 180k characters (source first, then config, tests, docs; lockfiles left out). The
-   rest are listed with the command to read each.
+   rest are written to `.orca/pr-tour-runs/<pr>/` with the PR's version of each changed file, and
+   the agent reads them there.
 4. **Check the reply** against `prguide/v2` (`src/schema.ts`): headline word limits, every file and
    finding line must be in the diff, every changed file needs a note, and the tour covers each
    changed file once. A reply that doesn't fit gets one repair round.
@@ -125,7 +126,7 @@ All six must pass. `orca plugin test .` runs the worker end to end with faked gi
 For a UI change, add a screenshot to the pull request:
 
 - Panel: `orca plugin shot local.pr-tour`
-- Guide: `orca plugin shot local.pr-tour --editor <repo>/.pr-tour/pr-<n>.prtour.json`
+- Guide: `orca plugin shot local.pr-tour --editor <repo>/.orca/pr-tour/pr-<n>.prtour.json`
 
 Both save to `.orca/shots/`.
 

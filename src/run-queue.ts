@@ -1,6 +1,6 @@
 // Agent runs, one at a time: the ones a person asked for and the automatic ones, which wait for
 // pushes to settle and stop at the daily limit.
-import { patchItem, runState, type WorkerState } from "./worker-state";
+import { patchItem, rateLimited, runState, type QueuedRun, type WorkerState } from "./worker-state";
 
 /** After an author pushes, wait this long for more pushes before updating the guide. */
 const SETTLE_MS = 90_000;
@@ -10,7 +10,7 @@ export type RunQueue = {
   enqueue: (key: string, automatic: boolean) => void;
   /** Queues an automatic run for every tracked PR that is due one. */
   scheduleAutomatic: () => void;
-  /** Clears the settle timers. */
+  /** Clears the settle timers and the runs waiting, for the worker stopping. */
   stop: () => void;
 };
 
@@ -40,13 +40,23 @@ function refreshAfterSettle(q: Queue): void {
   q.timers.add(timer);
 }
 
+/**
+ * The next run to start, in the order they were asked for, passing over automatic ones while
+ * GitHub's rate limit holds (they stay queued); a run you ask for still starts.
+ */
+function takeNext(state: WorkerState): QueuedRun | undefined {
+  const limited = rateLimited(state);
+  const i = state.queued.findIndex((r) => !(limited && r.automatic));
+  return i < 0 ? undefined : state.queued.splice(i, 1)[0];
+}
+
 /** One run at a time, in the order they were asked for. */
 async function drain(q: Queue): Promise<void> {
   const { state } = q.deps;
   if (q.draining) return;
   q.draining = true;
   try {
-    for (let next = state.queued.shift(); next; next = state.queued.shift()) {
+    for (let next = takeNext(state); next; next = takeNext(state)) {
       state.generating.add(next.key);
       patchItem(state, next.key, { status: "generating" });
       q.deps.publish();
@@ -83,6 +93,8 @@ function settled(q: Queue, key: string, head: string, now: number): boolean {
 
 function scheduleAutomatic(q: Queue): void {
   const { state } = q.deps;
+  // GitHub's rate limit holds automatic runs too; a run you ask for still starts.
+  if (rateLimited(state)) return;
   const now = Date.now();
   for (const t of state.tracked.values()) {
     const { item } = t;
@@ -92,6 +104,8 @@ function scheduleAutomatic(q: Queue): void {
     if (spent >= state.settings.dailyLimit) break;
     enqueue(q, item.key, true);
   }
+  // Runs held by a rate limit that has lifted start again.
+  void drain(q);
 }
 
 export function createRunQueue(deps: Deps): RunQueue {
@@ -102,6 +116,7 @@ export function createRunQueue(deps: Deps): RunQueue {
     stop: () => {
       for (const timer of q.timers) clearTimeout(timer);
       q.timers.clear();
+      q.deps.state.queued.length = 0;
     },
   };
 }

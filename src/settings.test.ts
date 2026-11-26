@@ -1,11 +1,11 @@
 import { assert, test } from "orca/testing";
-import { agentLabel, readSettings } from "./settings";
+import { agentLabel, asHarness, harnessName, readSettings } from "./settings";
 import { statusBar } from "./status-bar";
 import type { QueueItem } from "./protocol";
 
 test("settings of the wrong type fall back to their defaults", () => {
   const s = readSettings({
-    harness: "gemini",
+    harness: 3,
     model: 4,
     teams: "acme/pay, @acme/id",
     dailyLimit: "9",
@@ -25,6 +25,15 @@ test("the agent label names the CLI and the model, if one is set", () => {
     agentLabel({ harness: "claude", model: "claude-opus-5-5" }),
     "Claude Code · claude-opus-5-5",
   );
+});
+
+test("every agent in the table can be chosen; anything else falls back to Claude Code", () => {
+  for (const id of ["claude", "codex", "cursor", "copilot", "gemini", "droid", "qwen", "pi"])
+    assert.equal(asHarness(id), id);
+  for (const id of ["nope", 3, null])
+    assert.equal(asHarness(id), "claude", `${String(id)} was accepted`);
+  assert.equal(harnessName("codex"), "Codex");
+  assert.equal(harnessName("gemini"), "Gemini CLI");
 });
 
 const item = (over: Partial<QueueItem>) =>

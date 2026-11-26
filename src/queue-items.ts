@@ -3,17 +3,18 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Clone } from "./git";
-import { searchPrs, type PrDetails, type SearchHit } from "./github";
+import { mapLimit } from "./cache";
+import { GH_AT_ONCE, searchPrs, type PrDetails, type SearchHit } from "./github";
 import type { ItemStatus, Lane, QueueItem } from "./protocol";
 import { countOwnedFiles, isLockfileOnly, parseCodeowners, prKey } from "./repo";
 import { riskHeadline, SCHEMA_ID } from "./schema";
 import type { Settings } from "./settings";
-import type { Meta, Store, StoredGuide } from "./store";
+import type { Meta, SavedPr, Store, StoredGuide } from "./store";
 
 const CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 
-/** A PR the worker follows: its queue row, GitHub's details, and where its code is locally. */
-export type Tracked = { item: QueueItem; details: PrDetails; clone: Clone | null; auto: boolean };
+/** A PR the worker follows: its queue row, its head branch, and where its code is locally. */
+export type Tracked = { item: QueueItem; branch: string; clone: Clone | null; auto: boolean };
 
 /** A PR a search found, the lane it came in by and, for a team request, the team. */
 export type Found = { hit: SearchHit; lane: Lane; team: string | null };
@@ -21,7 +22,7 @@ export type Found = { hit: SearchHit; lane: Lane; team: string | null };
 /** What an agent run is doing for a PR right now, if anything. */
 export type RunState = "generating" | "queued" | null;
 
-/** Every lane's search at once; a PR found by several keeps the first lane, in this order. */
+/** Every lane's search, GH_AT_ONCE at a time; a PR found by several keeps the first lane, in this order. */
 export async function searchLanes(
   settings: Pick<Settings, "teams" | "includeAuthored">,
 ): Promise<Map<string, Found>> {
@@ -36,7 +37,7 @@ export async function searchLanes(
       ? [{ qualifier: "author:@me", lane: "authored" as const, team: null }]
       : []),
   ];
-  const results = await Promise.all(lanes.map((l) => searchPrs(l.qualifier)));
+  const results = await mapLimit(lanes, GH_AT_ONCE, (l) => searchPrs(l.qualifier));
   const found = new Map<string, Found>();
   lanes.forEach(({ lane, team }, i) => {
     for (const hit of results[i] ?? []) {
@@ -62,9 +63,12 @@ async function ownedFiles(
   return typeof text === "string" ? countOwnedFiles(parseCodeowners(text), files, teams) : null;
 }
 
+/** Authors whose PRs get automatic runs; anyone else's PR is only run when the person asks. */
+const TRUSTED = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
 /** Why this PR gets no automatic guide, or null when it does. */
 export function manualReason(
-  pr: { lane: Lane; details: PrDetails; owned: number | null },
+  pr: { lane: Lane; details: PrDetails; owned: number | null; association: string | null },
   repo: { optIn: boolean | null; hasClone: boolean },
   settings: Settings,
 ): string | null {
@@ -73,6 +77,11 @@ export function manualReason(
   if (repo.optIn !== true)
     return repo.optIn === false ? "Repository turned off" : "Repository not turned on yet";
   if (d.isDraft && settings.skipDrafts) return "Draft";
+  // A stranger's PR (say, through a CODEOWNERS team request) is not run unasked. Your own are.
+  if (lane !== "authored" && !TRUSTED.has(pr.association ?? ""))
+    return pr.association === null
+      ? "Couldn't check the author's access"
+      : "Author is not a collaborator";
   if (lane === "user" && !settings.autoRequested) return "Automatic guides are off";
   if (lane === "team") {
     if (!settings.autoTeams) return "Automatic team guides are off";
@@ -108,6 +117,8 @@ export type PrFound = {
   clone: Clone | null;
   team: string | null;
   requestedAt: number;
+  /** GitHub's author_association; null when unknown or not asked (your own PRs). */
+  association: string | null;
 };
 
 /** The part of a queue row that comes straight from GitHub and the search that found the PR. */
@@ -134,47 +145,101 @@ function rowBase(pr: PrFound) {
   };
 }
 
-/** The PR with everything the queue row shows, read from storage and the local clone. */
-export async function buildItem(
-  pr: PrFound,
-  deps: {
-    store: Store;
-    settings: Settings;
-    run: RunState;
-    tourLabel: (key: string, guide: StoredGuide | null, stored: unknown) => Promise<string | null>;
-  },
-): Promise<Tracked> {
-  const { key, repo, lane, details: d, clone } = pr;
-  const { store, settings } = deps;
-  const files = d.files.map((f) => f.path);
-  const [guide, meta, optIn, tour, draft, owned] = await Promise.all([
+type ItemDeps = {
+  store: Store;
+  settings: Settings;
+  run: RunState;
+  tourLabel: (key: string, guide: StoredGuide | null, stored: unknown) => Promise<string | null>;
+};
+
+/** The parts of a queue row read from storage and the runs under way, for the PR at `head`. */
+async function storedParts(key: string, head: string, lockfileOnly: boolean, deps: ItemDeps) {
+  const { store } = deps;
+  const [guide, meta, tour, draft] = await Promise.all([
     store.guide(key),
     store.meta(key),
-    store.optIn(repo),
     store.tour(key),
-    store.draft(key, d.headRefOid),
-    lane === "team" ? ownedFiles(clone, files, settings.teams) : null,
+    store.draft(key, head),
   ]);
+  const status = statusOf({ run: deps.run, guide, meta, head, lockfileOnly });
+  return {
+    status,
+    risk: guide?.risk.level ?? null,
+    riskSummary: guide ? riskHeadline(guide) : null,
+    newSinceYourReview: Boolean(meta.lastViewedCommit && meta.lastViewedCommit !== head),
+    error: status === "failed" ? (meta.error ?? null) : null,
+    tour: status === "ready" ? await deps.tourLabel(key, guide, tour) : null,
+    pendingComments: draft.comments.length,
+  };
+}
+
+/** The PR with everything the queue row shows, read from storage and the local clone. */
+export async function buildItem(pr: PrFound, deps: ItemDeps): Promise<Tracked> {
+  const { key, repo, lane, details: d, clone } = pr;
+  const files = d.files.map((f) => f.path);
   const lockfileOnly = isLockfileOnly(files);
+  const [stored, optIn, owned] = await Promise.all([
+    storedParts(key, d.headRefOid, lockfileOnly, deps),
+    deps.store.optIn(repo),
+    lane === "team" ? ownedFiles(clone, files, deps.settings.teams) : null,
+  ]);
   const reason = lockfileOnly
     ? "Lockfile only"
-    : manualReason({ lane, details: d, owned }, { optIn, hasClone: clone !== null }, settings);
-  const status = statusOf({ run: deps.run, guide, meta, head: d.headRefOid, lockfileOnly });
+    : manualReason(
+        { lane, details: d, owned, association: pr.association },
+        { optIn, hasClone: clone !== null },
+        deps.settings,
+      );
   return {
-    details: d,
+    branch: d.headRefName,
     clone,
     auto: reason === null,
+    item: { ...rowBase(pr), ...stored, ownedFiles: owned, manualReason: reason },
+  };
+}
+
+/** What the last check knew of a tracked PR, saved so a restarted worker can list it again. */
+export function savedPr(t: Tracked, association: string | undefined): SavedPr {
+  const { item: i } = t;
+  return {
+    ...(association ? { association } : {}),
+    key: i.key,
+    repo: i.repo,
+    number: i.number,
+    title: i.title,
+    author: i.author,
+    url: i.url,
+    lane: i.lane,
+    draft: i.draft,
+    additions: i.additions,
+    deletions: i.deletions,
+    changedFiles: i.changedFiles,
+    headSha: i.headSha,
+    hasClone: i.hasClone,
+    requestedAt: i.requestedAt,
+    team: i.team,
+    ownedFiles: i.ownedFiles,
+    manualReason: i.manualReason,
+    branch: t.branch,
+  };
+}
+
+/**
+ * A saved PR tracked again, its guide and run state read as `buildItem` reads them. The clone is
+ * found again when needed; the next check replaces the whole entry.
+ */
+export async function restoreItem(saved: SavedPr, deps: ItemDeps): Promise<Tracked> {
+  const { branch, association: _association, ...row } = saved;
+  const lockfileOnly = saved.manualReason === "Lockfile only";
+  return {
+    branch,
+    clone: null,
+    auto: saved.manualReason === null,
     item: {
-      ...rowBase(pr),
-      status,
-      risk: guide?.risk.level ?? null,
-      riskSummary: guide ? riskHeadline(guide) : null,
-      newSinceYourReview: Boolean(meta.lastViewedCommit && meta.lastViewedCommit !== d.headRefOid),
-      ownedFiles: owned,
-      manualReason: reason,
-      error: status === "failed" ? (meta.error ?? null) : null,
-      tour: status === "ready" ? await deps.tourLabel(key, guide, tour) : null,
-      pendingComments: draft.comments.length,
+      ...row,
+      position: null,
+      repoLabel: saved.repo,
+      ...(await storedParts(saved.key, saved.headSha, lockfileOnly, deps)),
     },
   };
 }

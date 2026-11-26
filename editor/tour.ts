@@ -116,7 +116,7 @@ const stopName = (ctx: TourContext, i: number) =>
 // ---------------------------------------------------------------- shared
 
 /**
- * A changed file in a list (a skim stop's other files, the skipped files, Since your last review):
+ * A changed file in a list (a skim stop's other files, the skipped files):
  * its path as an open/close toggle with `lead` under it; the diff loads the first time it is
  * opened. With `line` it starts open there.
  */
@@ -145,30 +145,90 @@ function fileRow(
   return h("li", {}, view.el);
 }
 
+/** The files changed since the reviewer's last look, for marking the tour's stops. */
+const changedSince = (ctx: TourContext): ReadonlySet<string> =>
+  new Set(ctx.guide.sinceLastReview?.changes.map((c) => c.file) ?? []);
+
+type SinceReview = NonNullable<PrGuide["sinceLastReview"]>;
+
+/** What Since your last review says, worth acting on only: no unchanged risk, no zero counts. */
+function sinceText(s: SinceReview, level: PrGuide["risk"]["level"]): string {
+  const n = s.changes.length;
+  const answers = s.changes.filter((c) => c.answersComment).length;
+  return [
+    n
+      ? `${plural(n, "file")} changed since you last looked`
+      : "No file changes since you last looked",
+    s.openComments ? `${s.openComments} of your comments still open` : "",
+    answers ? `${answers} ${answers === 1 ? "answers your comment" : "answer your comments"}` : "",
+    s.riskChanged ? `Risk is now ${level[0]?.toUpperCase()}${level.slice(1)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/**
+ * Show changes / Hide changes for the per-file list under the line. The rows are built on open
+ * and removed on close, their diff views disposed then, or with the view while open.
+ */
+function sinceToggle(ctx: TourContext, s: SinceReview, list: HTMLElement): HTMLElement {
+  const toggle = h(
+    "button",
+    { type: "button", class: "link small", "aria-expanded": "false", "aria-controls": list.id },
+    "Show changes",
+  );
+  toggle.addEventListener("click", () => {
+    const open = toggle.getAttribute("aria-expanded") !== "true";
+    // No diffs here: the tour shows each file's; a row says what changed and leads to its stop.
+    if (open)
+      list.replaceChildren(
+        ...s.changes.map((c) =>
+          h(
+            "li",
+            { class: "since-row" },
+            h("span", { class: "mono small" }, c.file),
+            h(
+              "span",
+              { class: "since-note" },
+              prose(c.headline),
+              c.answersComment ? h("span", { class: "tag new" }, "answers your comment") : null,
+            ),
+            goToStop(ctx, stopForFile(ctx.lookup, c.file)),
+          ),
+        ),
+      );
+    else list.replaceChildren();
+    list.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Hide changes" : "Show changes";
+  });
+  return toggle;
+}
+
+/**
+ * Since your last review as one line under the header: what changed and what is still the
+ * reviewer's to act on, with the per-file list behind Show changes. The commit pair is its tooltip.
+ */
 function since(ctx: TourContext): HTMLElement | null {
   const s = ctx.guide.sinceLastReview;
   if (!s) return null;
-  return section(
-    "since-h",
-    "Since your last review",
-    `${s.fromCommit.slice(0, 7)} → ${s.toCommit.slice(0, 7)}`,
-    "h2",
-    h(
-      "ul",
-      { class: "file-rows" },
-      ...s.changes.map((c) =>
-        fileRow(ctx, c.file, [
-          h("p", {}, prose(c.headline)),
-          c.answersComment ? h("span", { class: "tag new" }, "answers your comment") : null,
-        ]),
-      ),
-    ),
+  const list = s.changes.length
+    ? h("ul", { class: "since-rows", id: "since-files", hidden: "" })
+    : null;
+  return h(
+    "div",
+    {
+      class: "since small muted",
+      title: `${s.fromCommit.slice(0, 7)} → ${s.toCommit.slice(0, 7)}`,
+    },
     h(
       "p",
-      { class: "muted small" },
-      s.riskChanged ? "The risk level changed. " : "Risk unchanged. ",
-      s.openComments !== null ? `${plural(s.openComments, "of your comments")} still open.` : "",
+      { class: "since-line" },
+      sinceText(s, ctx.guide.risk.level),
+      list ? " " : null,
+      list ? sinceToggle(ctx, s, list) : null,
     ),
+    list,
   );
 }
 
@@ -472,7 +532,13 @@ const MARK_ARIA = { start: " (start here)", resume: " (resume here)", seen: " (s
  * a short name (its title, else its file), its worst finding in words, and where the tour is.
  * The sentence waits for the stop itself; the label and tooltip carry it for whoever wants it now.
  */
-function stepCard(ctx: TourContext, s: Stop, i: number, mark: StepMark): HTMLElement {
+function stepCard(
+  ctx: TourContext,
+  s: Stop,
+  i: number,
+  mark: StepMark,
+  changed: boolean,
+): HTMLElement {
   const findings = findingsIn(ctx.guide, s.files);
   const worst = SEVERITIES.find((sev) => findings.some((f) => f.severity === sev));
   const more = s.files.length - 1;
@@ -485,12 +551,17 @@ function stepCard(ctx: TourContext, s: Stop, i: number, mark: StepMark): HTMLEle
       type: "button",
       class: `tour-step${s.depth === "skim" ? " skim" : ""}${here ? " here" : ""}`,
       title: s.headline,
-      "aria-label": `Stop ${i + 1}${mark ? MARK_ARIA[mark] : ""}: ${name}, ${DEPTH_LABEL[s.depth].toLowerCase()}. ${s.headline}${found}`,
+      "aria-label": `Stop ${i + 1}${mark ? MARK_ARIA[mark] : ""}${changed ? " (changed since your last review)" : ""}: ${name}, ${DEPTH_LABEL[s.depth].toLowerCase()}. ${s.headline}${found}`,
     },
     h(
       "span",
       { class: "tour-step-top", "aria-hidden": "true" },
-      h("span", {}, String(i + 1)),
+      h(
+        "span",
+        {},
+        String(i + 1),
+        changed ? h("span", { class: "tour-step-changed" }, " · changed ") : null,
+      ),
       mark ? h("span", { class: `tour-step-mark ${mark}` }, MARK_TEXT[mark]) : null,
     ),
     h(
@@ -525,12 +596,25 @@ function tourSection(ctx: TourContext): HTMLElement {
     return ctx.state.visited.includes(i) ? "seen" : null;
   };
   const { total } = filesCovered([], shapeOf(ctx));
+  const changed = changedSince(ctx);
   return section(
     "tour-h",
     "Tour",
     `${plural(stops.length, "stop")} · covers ${plural(total, "file")} · ~${tourMinutes({ ...guide, readingOrder: stops })} min`,
     "h2",
-    h("ol", { class: "tour-steps" }, ...stops.map((s, i) => stepCard(ctx, s, i, markOf(i)))),
+    h(
+      "ol",
+      { class: "tour-steps" },
+      ...stops.map((s, i) =>
+        stepCard(
+          ctx,
+          s,
+          i,
+          markOf(i),
+          s.files.some((f) => changed.has(f)),
+        ),
+      ),
+    ),
     skippedLink(ctx),
   );
 }

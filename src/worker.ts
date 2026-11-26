@@ -16,31 +16,41 @@ import { createGuideRun } from "./guide-run";
 import { createOpener, type Opener } from "./open-guide";
 import { createPrData } from "./pr-data";
 import { createQueueCheck } from "./queue-check";
-import { buildItem, type PrFound, type Tracked } from "./queue-items";
+import { buildItem, restoreItem, type PrFound, type Tracked } from "./queue-items";
 import { prKey } from "./repo";
 import { registerRequests } from "./requests";
+import { removeStaleRuns } from "./run-files";
 import { createReviewService, type ReviewService } from "./review-service";
 import { createRunQueue, type RunQueue } from "./run-queue";
 import { readSettings } from "./settings";
-import { createStore, type Store, type StoredGuide } from "./store";
+import { createStore, type SavedPr, type Store, type StoredGuide } from "./store";
 import { createTourProgress } from "./tour-progress";
 import {
   createWorkerState,
+  holdForRateLimit,
+  isRateLimit,
   patchItem,
   queueStateOf,
+  rateLimited,
   runState,
   type WorkerState,
 } from "./worker-state";
 
-const POLL_MS = 5 * 60_000;
+/** How often GitHub is checked; cheap, since an unchanged PR costs no call beyond its search. */
+const POLL_MS = 2 * 60_000;
+/** A restart this soon after the last check lists the saved PRs and leaves checking to the poll. */
+const RECENT_CHECK_MS = 2 * 60_000;
 /** Guides of PRs that left the queue are forgotten after this long. */
 const KEEP_GUIDES_MS = 14 * 24 * 60 * 60_000;
 
 let stopTimers: () => void = () => undefined;
+/** Aborted when Orca stops the worker, which stops a running agent and git fetch with it. */
+let stopping = new AbortController();
 
-/** Clears the poll and settle timers before Orca stops the worker. */
+/** Clears the timers and stops any agent run before Orca stops the worker. */
 export function deactivate(): void {
   stopTimers();
+  stopping.abort();
 }
 
 /** The parts every action below needs. */
@@ -54,6 +64,8 @@ type Parts = {
   publish: () => void;
   /** The PR as the queue shows it now, read from storage and the local clone. */
   itemFor: (pr: PrFound) => Promise<Tracked>;
+  /** A PR the last check saved, as the queue shows it now. */
+  restoreItem: (saved: SavedPr) => Promise<Tracked>;
 };
 
 async function requireGuide(store: Store, key: string): Promise<StoredGuide> {
@@ -90,6 +102,7 @@ async function focusedKey(p: Parts): Promise<string> {
     clone: await p.clones.find(f.repo),
     team: null,
     requestedAt: Date.parse(details.createdAt) || Date.now(),
+    association: null,
   });
   p.state.tracked.set(key, { ...built, auto: false });
   return key;
@@ -132,9 +145,10 @@ function createRefresh(
   return () => {
     if (checking) return checking;
     const run = checkOnce()
-      .catch((e: unknown) => {
+      .catch(async (e: unknown) => {
         p.state.lastError = message(e);
         p.log(`check failed: ${p.state.lastError}`);
+        if (isRateLimit(p.state.lastError)) await holdForRateLimit(p.state);
       })
       .finally(() => {
         checking = null;
@@ -166,6 +180,7 @@ async function createParts(orca: OrcaWorkerApi) {
   const store = createStore(orca.storage);
   const settingsNow = async () => readSettings(await orca.settings.get());
   const state = createWorkerState(await settingsNow(), await store.runsToday());
+  state.tampered = await store.tampered();
   const clones = createClones(async () => (await orca.host.call("project.list")).projects);
   const prData = createPrData({
     log,
@@ -173,6 +188,12 @@ async function createParts(orca: OrcaWorkerApi) {
   });
   const tours = createTourProgress({ skipped: prData.skipped, log });
   const focus = createFocus({ host: orca.host, state, log });
+  const itemDeps = (key: string) => ({
+    store,
+    settings: state.settings,
+    run: runState(state, key),
+    tourLabel: tours.label,
+  });
   const parts: Parts = {
     state,
     store,
@@ -184,24 +205,59 @@ async function createParts(orca: OrcaWorkerApi) {
       orca.panels.post("queue.changed", queueStateOf(state));
       void focus.showStatusBar();
     },
-    itemFor: (pr) =>
-      buildItem(pr, {
-        store,
-        settings: state.settings,
-        run: runState(state, pr.key),
-        tourLabel: tours.label,
-      }),
+    itemFor: (pr) => buildItem(pr, itemDeps(pr.key)),
+    restoreItem: (saved) => restoreItem(saved, itemDeps(saved.key)),
   };
   return { parts, prData, tours, settingsNow };
 }
 
+/** Run folders left by a crash hold a PR's files; cleared before any run starts. */
+async function clearOldRuns(orca: OrcaWorkerApi, log: (text: string) => void): Promise<void> {
+  try {
+    const { projects } = await orca.host.call("project.list");
+    const local = projects.filter((p) => p.kind === "git" && (!p.hostId || p.hostId === "local"));
+    await removeStaleRuns(local.map((p) => p.path));
+  } catch (e) {
+    log(`could not remove old run files: ${message(e)}`);
+  }
+}
+
+/** Whether the list restored at startup was checked too recently to check again yet. */
+function checkedRecently(state: WorkerState): boolean {
+  const since = state.checkedAt === null ? null : Date.now() - state.checkedAt;
+  return since !== null && since >= 0 && since < RECENT_CHECK_MS;
+}
+
+/**
+ * Before the first check: the login shell's PATH, no run folders left by a crash, and the list
+ * from before a restart shown until the check replaces it.
+ */
+async function beforeFirstCheck(
+  orca: OrcaWorkerApi,
+  p: Parts,
+  restore: () => Promise<void>,
+): Promise<void> {
+  await loadLoginPath();
+  await clearOldRuns(orca, p.log);
+  await restore().catch((e: unknown) => p.log(`could not restore the list: ${message(e)}`));
+  p.publish();
+}
+
+/** An Orca notification; one Orca cannot show is dropped. */
+async function notify(orca: OrcaWorkerApi, title: string, body: string): Promise<void> {
+  await orca.host.call("notifications.show", { title, body }).catch(() => undefined);
+}
+
 export default async function activate(orca: OrcaWorkerApi): Promise<void> {
+  stopping = new AbortController();
   const { parts, prData, tours, settingsNow } = await createParts(orca);
-  const { state, store, clones, focus, opener, log, publish, itemFor } = parts;
+  const { state, store, clones, focus, opener, log, publish } = parts;
   /** Guides started from a command open themselves when they are written. */
   const openWhenReady = new Set<string>();
-  const check = createQueueCheck({ state, store, clones, readSettings: settingsNow, itemFor, log });
-  const refresh = createRefresh(parts, check, () => runs.scheduleAutomatic());
+  const queue = createQueueCheck({ ...parts, readSettings: settingsNow });
+  const refresh = createRefresh(parts, queue.check, () => runs.scheduleAutomatic());
+  /** A check nobody asked for (the poll, a restart, pushes settling) waits out a rate limit. */
+  const autoRefresh = (): Promise<void> => (rateLimited(state) ? Promise.resolve() : refresh());
   const generate = createGuideRun({
     state,
     store,
@@ -210,12 +266,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     tours,
     log,
     publish,
+    signal: stopping.signal,
     onWritten: (key) => openIfAsked(parts, openWhenReady, key),
-    notify: async (title, body) => {
-      await orca.host.call("notifications.show", { title, body }).catch(() => undefined);
-    },
+    notify: (title, body) => notify(orca, title, body),
   });
-  const runs: RunQueue = createRunQueue({ state, generate, publish, refresh });
+  const runs: RunQueue = createRunQueue({ state, generate, publish, refresh: autoRefresh });
   const reviews = reviewsFor(parts, refresh);
   registerRequests(orca, {
     state,
@@ -238,11 +293,11 @@ export default async function activate(orca: OrcaWorkerApi): Promise<void> {
     },
   });
 
-  await loadLoginPath();
-  const poll = setInterval(() => void refresh(), POLL_MS);
+  await beforeFirstCheck(orca, parts, queue.restore);
+  const poll = setInterval(() => void autoRefresh(), POLL_MS);
   stopTimers = () => {
     clearInterval(poll);
     runs.stop();
   };
-  void refresh();
+  if (!checkedRecently(state)) void autoRefresh();
 }

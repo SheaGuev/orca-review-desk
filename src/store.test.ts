@@ -59,3 +59,43 @@ test("opt-in is null until answered", async () => {
   await store.setOptIn("acme/api", false);
   assert.equal(await store.optIn("acme/api"), false);
 });
+
+test("a saved list in any other shape reads as none", async () => {
+  const pr = {
+    key: "acme/api#7",
+    repo: "acme/api",
+    number: 7,
+    title: "t",
+    author: "sam",
+    url: "https://github.com/acme/api/pull/7",
+    lane: "user",
+    draft: false,
+    additions: 1,
+    deletions: 2,
+    changedFiles: 3,
+    headSha: "abc",
+    hasClone: true,
+    requestedAt: 5,
+    team: null,
+    ownedFiles: null,
+    manualReason: null,
+    branch: "feature",
+  };
+  const read = async (value: unknown) =>
+    createStore(fakeStorage({ lastCheck: value }).storage).lastCheck();
+  assert.deepEqual(await read({ checkedAt: 9, prs: [{ ...pr, extra: 1 }] }), {
+    checkedAt: 9,
+    prs: [pr],
+  });
+  assert.equal(await read(null), null);
+  assert.equal(await read({ checkedAt: "9", prs: [pr] }), null);
+  assert.equal(await read({ checkedAt: 9, prs: [{ ...pr, lane: "other" }] }), null);
+  assert.equal(await read({ checkedAt: 9, prs: [{ ...pr, branch: undefined }] }), null);
+  assert.equal(await read({ checkedAt: 9, items: [] }), null);
+});
+
+test("prune keeps the saved list", async () => {
+  const { storage, data } = fakeStorage({ lastCheck: { checkedAt: 1, prs: [] } });
+  await createStore(storage).prune(() => false, Date.now());
+  assert.ok(data.has("lastCheck"));
+});

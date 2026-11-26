@@ -46,15 +46,73 @@ function fakeTools(opts: {
   overrides?: string;
   /** The agent CLI answers only once this settles, so a test can act while a run is under way. */
   agentGate?: Promise<void>;
+  /** GitHub's author_association for every PR; null makes the call fail. MEMBER when left out. */
+  association?: string | null;
+  /** What the agent CLI does before it answers, such as writing into the clone. */
+  agentDoes?: () => Promise<void>;
+  /** Which binaries are on PATH; all of them when left out. */
+  installed?: (cmd: string) => boolean;
+  /** Every gh call fails with GitHub's rate limit. */
+  ghDown?: boolean;
+  /** The PR's diff; DIFF when left out. */
+  diff?: string;
+  /** Each PR's updated_at in search results, by number; a test may change it between checks. */
+  updatedAt?: Record<number, string>;
+  /** While on, every gh call but rate_limit fails with the rate limit; `reset` is epoch seconds. */
+  limit?: { on: boolean; reset: number };
+  /** gh calls answer after a short delay, and the most in flight at once is recorded. */
+  inFlight?: { now: number; max: number };
+  /** The clone's origin URL; git@github.com:old-owner/api.git when left out. */
+  origin?: string;
 }) {
   const calls: Call[] = [];
   const replies = [...opts.agentReplies];
   setRunner(async (cmd, args, options) => {
     calls.push({ cmd, args, options });
     const ok = (stdout: string) => ({ stdout, stderr: "", code: 0 });
-    if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:old-owner/api.git\n");
+    if (cmd === "gh" && opts.inFlight) {
+      const f = opts.inFlight;
+      f.now++;
+      f.max = Math.max(f.max, f.now);
+      await new Promise((r) => setTimeout(r, 15));
+      f.now--;
+    }
+    if (cmd === "gh" && args[0] === "api" && args[1] === "rate_limit") {
+      const reset = opts.limit?.reset ?? 0;
+      return ok(
+        JSON.stringify({
+          resources: { core: { reset }, graphql: { reset }, search: { reset } },
+        }),
+      );
+    }
+    if (cmd === "gh" && opts.limit?.on)
+      return {
+        stdout: "",
+        stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        code: 1,
+      };
+    if (cmd === "gh" && opts.ghDown)
+      return {
+        stdout: "",
+        stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        code: 1,
+      };
+    if (cmd === "git" && args.includes("get-url"))
+      return ok(opts.origin ?? "git@github.com:old-owner/api.git\n");
     if (cmd === "git" && args.includes("--git-common-dir")) return ok(".git\n");
     if (cmd === "git" && args.includes("fetch") && opts.objects) opts.objects.present = true;
+    // The PR's version of each file asked for, one per input line.
+    if (cmd === "git" && args.includes("--batch"))
+      return ok(
+        (options?.input ?? "")
+          .split("\n")
+          .filter(Boolean)
+          .map((spec) => {
+            const blob = `PR version of ${spec.slice(spec.indexOf(":") + 1)}\n`;
+            return `${"b".repeat(40)} blob ${blob.length}\n${blob}\n`;
+          })
+          .join(""),
+      );
     if (cmd === "git" && args.includes("cat-file") && opts.objects?.present === false)
       return { stdout: "", stderr: "fatal: Not a valid object name", code: 128 };
     if (cmd === "git" && args.includes("--name-status"))
@@ -73,7 +131,7 @@ function fakeTools(opts: {
         : ok(opts.overrides);
     if (cmd === "git" && args.includes("check-attr"))
       return ok("assets/logo.png\0linguist-generated\0set\0");
-    if (cmd === "git" && args.includes("diff")) return ok(DIFF);
+    if (cmd === "git" && args.includes("diff")) return ok(opts.diff ?? DIFF);
     if (cmd === "git") return ok("");
     if (cmd === "gh" && args[0] === "api" && args.includes("search/issues")) {
       const q = args.find((a) => a.startsWith("q=")) ?? "";
@@ -82,9 +140,11 @@ function fakeTools(opts: {
         title: PR_VIEW.title,
         html_url: PR_VIEW.url,
         draft: false,
-        updated_at: "2026-11-19T00:00:00Z",
+        updated_at: opts.updatedAt?.[number] ?? "2026-11-19T00:00:00Z",
         user: { login: "sam" },
         repository_url: "https://api.github.com/repos/acme/api",
+        // GitHub's search results carry it; null leaves it out, as an older answer would.
+        ...(opts.association === null ? {} : { author_association: opts.association ?? "MEMBER" }),
       }));
       return ok(
         JSON.stringify({
@@ -103,6 +163,16 @@ function fakeTools(opts: {
       );
     }
     if (cmd === "gh" && args[0] === "api" && args[1] === "user") return ok("me\n");
+    if (
+      cmd === "gh" &&
+      args[0] === "api" &&
+      /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(args[1] ?? "")
+    ) {
+      const association = opts.association === undefined ? "MEMBER" : opts.association;
+      return association === null
+        ? { stdout: "", stderr: "gh: Not Found (HTTP 404)", code: 1 }
+        : ok(`${association}\n`);
+    }
     if (cmd === "gh" && args[0] === "api" && args.includes("POST")) {
       const path = args[args.indexOf("POST") + 1];
       if (path?.endsWith("/reviews"))
@@ -138,6 +208,7 @@ function fakeTools(opts: {
     if (cmd === "gh" && args[0] === "repo" && args[1] === "view")
       return ok(args[2] === "old-owner/api" ? "acme/api\n" : `${args[2]}\n`);
     if (cmd === "claude") await opts.agentGate;
+    if (cmd === "claude") await opts.agentDoes?.();
     if (cmd === "claude")
       return ok(
         JSON.stringify([
@@ -149,7 +220,7 @@ function fakeTools(opts: {
         ]),
       );
     return { stdout: "", stderr: `unexpected ${cmd} ${args.join(" ")}`, code: 1 };
-  });
+  }, opts.installed);
   return calls;
 }
 
@@ -207,9 +278,21 @@ async function setup(
     objects?: { present: boolean };
     overrides?: string;
     agentGate?: Promise<void>;
+    association?: string | null;
+    agentDoes?: () => Promise<void>;
+    installed?: (cmd: string) => boolean;
+    /** Runs on the clone's folder before the worker starts. */
+    before?: (dir: string) => Promise<void>;
+    ghDown?: boolean;
+    diff?: string;
+    updatedAt?: Record<number, string>;
+    limit?: { on: boolean; reset: number };
+    inFlight?: { now: number; max: number };
+    origin?: string;
   } = {},
 ) {
   dir = await mkdtemp(join(tmpdir(), "prguide-test-"));
+  await more.before?.(dir);
   const calls = fakeTools({ agentReplies, agentEvents, ...more });
   const host = mockHost({
     settings: SETTINGS,
@@ -293,12 +376,12 @@ test("turning a repository on writes the guide with worker-filled facts", async 
 
   const agent = calls.find((c) => c.cmd === "claude") as Call;
   assert.ok(agent.args.includes("--model") && agent.args.includes("claude-opus-5-5"));
-  assert.ok(agent.args.join(" ").includes("Bash(git show:*)"), "read-only tools only");
-  assert.equal(
-    agent.args[agent.args.indexOf("--tools") + 1],
-    "Read,Grep,Glob,Bash",
-    "no write tools exist in the run",
-  );
+  const flag = (name: string) => agent.args[agent.args.indexOf(name) + 1];
+  assert.equal(flag("--tools"), "Read,Grep,Glob", "no shell and no write tools exist in the run");
+  assert.equal(flag("--allowedTools"), "Read,Grep,Glob");
+  assert.ok(!agent.args.join(" ").includes("Bash"), "no shell, not even for git");
+  assert.equal(flag("--permission-mode"), "dontAsk");
+  assert.equal(flag("--settings"), '{"disableAllHooks":true}', "the person's hooks don't run");
   assert.ok(
     agent.args.includes("--strict-mcp-config") && agent.args.includes("--no-session-persistence"),
   );
@@ -335,25 +418,24 @@ test("Review opens the guide file in the repo workspace and remembers what you s
     "optin:acme/api": true,
   });
   await until(() => all()[0]?.status === "ready", "the guide");
-  // A guide written under the old name ("7.prtour.json") is replaced, not left beside the new one.
+  // Guides written where older versions put them are replaced, not left beside the new one.
   await mkdir(join(dir, ".pr-tour"), { recursive: true });
   await writeFile(join(dir, ".pr-tour/7.prtour.json"), "{}");
+  await writeFile(join(dir, ".pr-tour/pr-7.prtour.json"), "{}");
   assert.deepEqual(await worker.request("guide.open", { key: "acme/api#7" }), { opened: true });
 
-  // "pr-7": the tab is named after the file, and a bare "7" does not say it is a PR.
+  // Under .orca/, which Orca's dev watcher skips, so opening a guide of PR Tour's own repo
+  // does not reload the dev plugin. "pr-7": the tab is named after the file.
   assert.deepEqual(host.callsOf("editor.open").at(-1), {
     workspaceId: "w1",
-    path: ".pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-tour/pr-7.prtour.json",
   });
-  assert.deepEqual(
-    await readdir(join(dir, ".pr-tour")),
-    ["pr-7.prtour.json"],
-    "the old file is gone",
-  );
-  const written = JSON.parse(await readFile(join(dir, ".pr-tour/pr-7.prtour.json"), "utf8"));
+  assert.ok(!(await readdir(dir)).includes(".pr-tour"), "the old folder and its guides are gone");
+  const written = JSON.parse(await readFile(join(dir, ".orca/pr-tour/pr-7.prtour.json"), "utf8"));
   assert.equal(written.pr.number, 7);
   const exclude = await readFile(join(dir, ".git/info/exclude"), "utf8");
-  assert.ok(exclude.includes(".pr-tour/"), "the guide folder stays out of git status");
+  assert.ok(exclude.includes(".orca/pr-tour/"), "the guide folder stays out of git status");
+  assert.ok(exclude.includes(".orca/pr-tour-runs/"), "run files stay out of git status");
   assert.equal(
     (host.data().storage["meta:acme/api#7"] as { lastViewedCommit?: string }).lastViewedCommit,
     PR_VIEW.headRefOid,
@@ -398,7 +480,7 @@ test("the status bar command opens the focused branch guide, writing one first w
   await until(() => host.callsOf("editor.open").length === 1, "the guide to open");
   assert.deepEqual(host.callsOf("editor.open")[0], {
     workspaceId: "w1",
-    path: ".pr-tour/pr-7.prtour.json",
+    path: ".orca/pr-tour/pr-7.prtour.json",
   });
   assert.equal(calls.filter((c) => c.cmd === "claude").length, 1);
   assert.equal(
@@ -421,8 +503,8 @@ test("coverage records the files the agent opened with its tools", async () => {
         content: [
           {
             type: "tool_use",
-            name: "Bash",
-            input: { command: "git show refs/pr-tour/pr-7:src/SessionDataAccess.ts" },
+            name: "Read",
+            input: { file_path: ".orca/pr-tour-runs/7/head/0002.txt" },
           },
         ],
       },
@@ -442,9 +524,93 @@ test("coverage records the files the agent opened with its tools", async () => {
       "src/SessionDataAccess.test.ts",
       "README.md",
     ],
-    readByAgent: ["src/SessionDataAccess.ts"],
+    readByAgent: ["src/CustomerService.ts"],
     notRead: [],
   });
+});
+
+test("the agent reads the PR's files from the run folder, removed once the run ends", async () => {
+  let release = (): void => undefined;
+  const agentGate = new Promise<void>((resolve) => (release = resolve));
+  const { calls, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      agentGate,
+    },
+  );
+  await until(() => calls.some((c) => c.cmd === "claude"), "the agent run");
+  const run = join(dir, ".orca/pr-tour-runs/7");
+  try {
+    assert.equal(
+      await readFile(join(run, "index.txt"), "utf8"),
+      [
+        "0001  head  src/SessionDataAccess.ts",
+        "0002  head  src/CustomerService.ts",
+        "0003  head  src/SessionDataAccess.test.ts",
+        "0004  head  README.md",
+        "",
+      ].join("\n"),
+    );
+    assert.equal(
+      await readFile(join(run, "head/0002.txt"), "utf8"),
+      "PR version of src/CustomerService.ts\n",
+    );
+    const batch = calls.filter((c) => c.cmd === "git" && c.args.includes("--batch"));
+    assert.equal(batch.length, 1, "one git process for every PR version");
+    assert.ok(batch[0]?.options?.input?.startsWith("refs/pr-tour/pr-7:src/SessionDataAccess.ts\n"));
+    const prompt = calls.find((c) => c.cmd === "claude")?.options?.input ?? "";
+    assert.ok(prompt.includes("`.orca/pr-tour-runs/7/head/`"));
+    // The PR's own diff says "diff --git"; nothing else may name git.
+    const ours = prompt.replace(/<diff>[\s\S]*<\/diff>/, "");
+    assert.ok(!/\bgit /.test(ours), "no git command in the prompt");
+  } finally {
+    release();
+  }
+  await until(() => all()[0]?.status === "ready", "the guide");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after success");
+});
+
+test("the run folder is removed when the run fails or is stopped", async () => {
+  const failed = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
+  await until(() => failed.all()[0]?.status === "failed", "the failed run");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after a failure");
+  await current?.deactivate();
+  current = null;
+  await rm(dir, { recursive: true, force: true });
+
+  const stoppedGate = Promise.reject(
+    Object.assign(new Error("claude was stopped"), { code: "cancelled" }),
+  );
+  stoppedGate.catch(() => undefined);
+  const stopped = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      agentGate: stoppedGate,
+    },
+  );
+  await until(() => stopped.all()[0]?.status === "failed", "the stopped run");
+  assert.deepEqual(await readdir(join(dir, ".orca")), [], "removed after a stop");
+});
+
+test("run folders left by a crash are removed when the worker starts; guides stay", async () => {
+  const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    before: async (clone) => {
+      await mkdir(join(clone, ".orca/pr-tour-runs/3/head"), { recursive: true });
+      await writeFile(join(clone, ".orca/pr-tour-runs/3/head/0001.txt"), "left by a crash");
+      await writeFile(join(clone, ".orca/drops"), "Orca's own");
+      // Where runs were written before they moved under .orca/.
+      await mkdir(join(clone, ".pr-tour/runs/2/head"), { recursive: true });
+      await writeFile(join(clone, ".pr-tour/runs/2/head/0001.txt"), "left by a crash");
+      await writeFile(join(clone, ".pr-tour/pr-3.prtour.json"), "{}");
+    },
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.deepEqual(await readdir(join(dir, ".pr-tour")), ["pr-3.prtour.json"]);
+  assert.deepEqual(await readdir(join(dir, ".orca")), ["drops"], "the rest of .orca/ stays");
 });
 
 test("after the repair round, stray lines and missing notes are settled instead of failing", async () => {
@@ -520,6 +686,243 @@ test("a GitHub failure shows as the notice, with the last check time", async () 
   assert.ok(notice?.text.startsWith("Couldn't reach GitHub · last checked "), notice?.text);
 });
 
+test("GitHub's rate limit is named as such, not as GitHub being unreachable", async () => {
+  const { worker, latest } = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  setRunner(async () => ({
+    stdout: "",
+    stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+    code: 1,
+  }));
+  await worker.request("queue.refresh");
+  const notice = latest()?.notice;
+  assert.equal(notice?.tone, "warning");
+  assert.ok(notice?.text.startsWith("GitHub rate limit reached · last checked "), notice?.text);
+});
+
+test("after a restart, a failed first check still shows the last list, with when it was checked", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "the first check",
+  );
+  assert.equal(first.all()[0]?.key, "acme/api#7");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  // Long enough ago that the restart checks at once.
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
+  await first.worker.deactivate();
+
+  // A new worker (Orca restarted, or the plugin reloaded) whose first check hits the rate limit.
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, { ghDown: true });
+  await until(() => second.latest()?.notice != null, "the failed check's notice");
+  const state = second.latest() as QueueState;
+  assert.deepEqual(
+    second.all().map((i) => i.key),
+    ["acme/api#7"],
+    "the PRs from before the restart are still listed",
+  );
+  assert.notEqual(state.checkedAt, null, "the saved list says when it was checked");
+  assert.ok(
+    state.notice?.text.startsWith("GitHub rate limit reached · last checked "),
+    state.notice?.text,
+  );
+});
+
+test("restored PRs start no automatic run until a check works; run state is not restored", async () => {
+  // The first worker's run never finishes, so its saved list has a PR due an automatic guide.
+  const first = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    agentGate: new Promise(() => undefined),
+  });
+  await until(() => first.all()[0]?.status === "generating", "the automatic run");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  // Long enough ago that the restart checks at once.
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
+  await first.worker.deactivate();
+
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, { ghDown: true });
+  await until(() => second.latest()?.notice != null, "the failed check's notice");
+  await new Promise((r) => setTimeout(r, 100));
+  const row = second.all()[0];
+  assert.equal(row?.key, "acme/api#7");
+  assert.equal(row?.manualReason, null, "still due an automatic guide");
+  assert.equal(row?.status, "none", "the old worker's run is not shown as under way");
+  assert.equal(second.calls.filter((c) => c.cmd === "claude").length, 0, "no run before a check");
+});
+
+const ghCalls = (calls: { cmd: string; args: string[] }[]) => calls.filter((c) => c.cmd === "gh");
+const prViews = (calls: { cmd: string; args: string[] }[]) =>
+  calls.filter((c) => c.cmd === "gh" && c.args[0] === "pr" && c.args[1] === "view");
+const associationCalls = (calls: { cmd: string; args: string[] }[]) =>
+  calls.filter((c) => c.cmd === "gh" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(c.args[1] ?? ""));
+
+test("the worker checks GitHub every 2 minutes", async () => {
+  const intervals: number[] = [];
+  const real = globalThis.setInterval;
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
+    intervals.push(ms ?? 0);
+    return real(fn, ms);
+  }) as typeof setInterval;
+  try {
+    const { latest } = await setup([JSON.stringify(AGENT_GUIDE)]);
+    await until(() => latest()?.checkedAt != null, "the first check");
+  } finally {
+    globalThis.setInterval = real;
+  }
+  assert.ok(intervals.includes(2 * 60_000), `intervals: ${intervals.join(", ")}`);
+  assert.ok(!intervals.includes(5 * 60_000), "no longer every 5 minutes");
+});
+
+test("a restart within 2 minutes of the last check asks GitHub nothing; later it checks", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "check",
+  );
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  const soon = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  await until(() => soon.all().length > 0, "the saved list");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(ghCalls(soon.calls).length, 0, "no GitHub call on a quick restart");
+  assert.deepEqual(
+    soon.all().map((i) => i.key),
+    ["acme/api#7"],
+  );
+  await soon.worker.deactivate();
+
+  const old = structuredClone<Record<string, unknown>>(storage);
+  const saved = old.lastCheck as { checkedAt: number };
+  saved.checkedAt = Date.now() - 3 * 60_000;
+  const later = await setup([JSON.stringify(AGENT_GUIDE)], old);
+  await until(() => ghCalls(later.calls).length > 0, "a check after 2 minutes");
+});
+
+test("a check asks GitHub for details only of PRs that changed", async () => {
+  const updatedAt: Record<number, string> = {};
+  const { worker, calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [7, 8, 9],
+    updatedAt,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.equal(prViews(calls).length, 3);
+  await worker.request("queue.refresh");
+  assert.equal(prViews(calls).length, 3, "nothing changed, so no details asked again");
+  updatedAt[8] = "2026-11-22T12:00:00Z";
+  await worker.request("queue.refresh");
+  assert.deepEqual(
+    prViews(calls)
+      .slice(3)
+      .map((c) => c.args[2]),
+    ["8"],
+    "only the PR that changed",
+  );
+});
+
+test("a rate limit holds checks until GitHub's reset; refresh still tries", async () => {
+  const limit = { on: false, reset: Math.floor(Date.now() / 1000) + 40 * 60 };
+  const { worker, calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    limit,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  limit.on = true;
+  await worker.request("queue.refresh");
+  const resume = new Date(limit.reset * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  assert.ok(
+    latest()?.notice?.text.startsWith(`GitHub rate limit reached · checks resume at ${resume}`),
+    latest()?.notice?.text,
+  );
+  const before = ghCalls(calls).length;
+  await worker.request("queue.refresh");
+  assert.ok(ghCalls(calls).length > before, "a refresh you asked for still tries");
+});
+
+test("after a restart, author lookups are not asked again", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)]);
+  await until(
+    () => first.latest()?.checkedAt != null && first.latest()?.checking === false,
+    "check",
+  );
+  assert.equal(associationCalls(first.calls).length, 0, "the search carries it");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  (storage.lastCheck as { checkedAt: number }).checkedAt = Date.now() - 3 * 60_000;
+  await first.worker.deactivate();
+
+  // This search lacks it, so only the saved answer spares the lookup.
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage, undefined, {
+    association: null,
+  });
+  await until(
+    () => second.latest()?.checking === false && prViews(second.calls).length > 0,
+    "the check after the restart",
+  );
+  assert.equal(associationCalls(second.calls).length, 0, "the saved answer is used");
+});
+
+test("the author's association comes with the search; no lookup per PR", async () => {
+  const { calls, latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [7, 8, 9],
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.equal(associationCalls(calls).length, 0);
+  assert.ok(
+    latest()
+      ?.queue.concat(latest()?.notQueued ?? [])
+      .every((i) => i.manualReason !== "Couldn't check the author's access"),
+  );
+});
+
+test("at most 3 GitHub calls are in flight at once", async () => {
+  const inFlight = { now: 0, max: 0 };
+  const { latest } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    inFlight,
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  assert.ok(inFlight.max <= 3, `${inFlight.max} at once`);
+});
+
+test("stopping the worker stops a running agent, so it never runs on unattended", async () => {
+  let release: () => void = () => undefined;
+  const agentGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const { worker, calls, all } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    { agentGate },
+  );
+  await until(() => calls.some((c) => c.cmd === "claude"), "the agent to start");
+  await until(() => all()[0]?.status === "generating", "the run");
+  const agent = calls.find((c) => c.cmd === "claude");
+  assert.equal(agent?.options?.signal?.aborted ?? false, false, "running until the worker stops");
+  await worker.deactivate();
+  assert.equal(agent?.options?.signal?.aborted, true, "Orca stopping the worker stops the agent");
+  release();
+});
+
+test("the not-installed notice goes once another agent is chosen", async () => {
+  // Automatic guides off, so nothing runs on its own: only switching agents can clear it.
+  const { worker, host, latest, all } = await setup([JSON.stringify(AGENT_GUIDE)], {}, undefined, {
+    installed: (cmd) => cmd !== "claude",
+  });
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  await worker.request("guide.generate", { key: "acme/api#7" });
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.equal(latest()?.notice?.text, "Claude Code isn't installed · install it, then Generate");
+  host.respond("settings.get", { settings: { ...SETTINGS, harness: "codex" } });
+  await worker.request("queue.refresh");
+  assert.equal(
+    latest()?.notice,
+    null,
+    "no notice: the check worked and the chosen agent is installed",
+  );
+});
+
 test("an agent with no sign-in shows as the notice", async () => {
   const { latest, all } = await setup(["NOT_LOGGED_IN"], { "optin:acme/api": true });
   await until(() => all()[0]?.status === "failed", "the failed run");
@@ -527,6 +930,24 @@ test("an agent with no sign-in shows as the notice", async () => {
     tone: "danger",
     text: "Claude Code is not signed in · sign in from a terminal, then Generate",
   });
+});
+
+test("an agent CLI that is not installed shows as the notice and the row's reason", async () => {
+  const { latest, all, calls } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      installed: (cmd) => cmd !== "claude",
+    },
+  );
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.deepEqual(latest()?.notice, {
+    tone: "danger",
+    text: "Claude Code isn't installed · install it, then Generate",
+  });
+  assert.match(all()[0]?.error ?? "", /^Claude Code isn't installed/);
+  assert.equal(calls.filter((c) => c.cmd === "claude").length, 0, "the agent never ran");
 });
 
 const posts = (calls: Call[]) => calls.filter((c) => c.cmd === "gh" && c.args.includes("POST"));
@@ -730,6 +1151,29 @@ test("diff.get fetches the PR first when the clone lacks the guide's commit", as
   assert.equal(fetches.length, fetchesBefore + 1);
   assert.ok(fetches.at(-1)?.args.includes("+refs/pull/7/head:refs/pr-tour/pr-7"));
   assert.deepEqual(diff.lines, ["@@ -1 +1,2 @@", " # api", "+notes"]);
+});
+
+test("PRs are fetched over HTTPS with gh's credentials, never through origin's SSH", async () => {
+  const { calls } = await readyGuide();
+  const fetches = calls.filter((c) => c.cmd === "git" && c.args.includes("fetch"));
+  assert.ok(fetches.length > 0);
+  for (const f of fetches) {
+    // The clone's origin is git@github.com:old-owner/api.git; the PR lives at acme/api.
+    assert.ok(f.args.includes("https://github.com/acme/api.git"), f.args.join(" "));
+    assert.ok(!f.args.includes("origin"), "no SSH key or agent prompt in a background run");
+    const helpers = f.args.filter(
+      (a, i) => f.args[i - 1] === "-c" && a.startsWith("credential.helper="),
+    );
+    assert.deepEqual(helpers, ["credential.helper=", "credential.helper=!gh auth git-credential"]);
+  }
+});
+
+test("a clone whose origin uses another host name for GitHub still fetches from github.com", async () => {
+  const { calls } = await readyGuide({ origin: "git@work.github.com:acme/api.git\n" });
+  const fetches = calls.filter((c) => c.cmd === "git" && c.args.includes("fetch"));
+  assert.ok(fetches.length > 0);
+  for (const f of fetches)
+    assert.ok(f.args.includes("https://github.com/acme/api.git"), f.args.join(" "));
 });
 
 test("diff.get refuses a commit that is not a commit id", async () => {
@@ -1013,4 +1457,280 @@ test("a run counts against the daily limit by how it was started, not by what el
     "only the automatic run for #8 is counted",
   );
   assert.equal(host.callsOf("notifications.show").length, 1, "and only it notifies");
+});
+
+test("the agent run never sees the worker's GitHub token; git and gh keep their environment", async () => {
+  const saved = process.env.GH_TOKEN;
+  process.env.GH_TOKEN = "gh-secret-of-the-worker";
+  try {
+    const { calls, all } = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true });
+    await until(() => all()[0]?.status === "ready", "the guide");
+    const agent = calls.find((c) => c.cmd === "claude");
+    assert.ok(agent?.options?.env, "the agent is given an environment of its own");
+    assert.equal(agent.options.env.GH_TOKEN, undefined);
+    assert.ok(
+      calls.filter((c) => c.cmd !== "claude").every((c) => c.options?.env === undefined),
+      "git and gh run as before",
+    );
+  } finally {
+    if (saved === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = saved;
+  }
+});
+
+const TOKEN = `ghp_${"a1".repeat(18)}`;
+
+test("a reply holding a token is not stored; the PR is marked failed", async () => {
+  const leaky = JSON.stringify({
+    ...AGENT_GUIDE,
+    risk: { ...AGENT_GUIDE.risk, headline: `Uses ${TOKEN} to call GitHub` },
+  });
+  const { host, all } = await setup([leaky], { "optin:acme/api": true });
+  await until(() => all()[0]?.status === "failed", "the refused guide");
+  assert.equal(host.data().storage["guide:acme/api#7"], undefined);
+  const error = all()[0]?.error ?? "";
+  assert.ok(error.includes("a GitHub token"), error);
+  assert.ok(!error.includes(TOKEN), "the error never repeats the token");
+});
+
+test("review.submit refuses a comment holding a token and posts nothing", async () => {
+  const { worker, calls, host } = await readyGuide();
+  const draft = {
+    ...DRAFT,
+    comments: [nth(DRAFT.comments, 0), { ...nth(DRAFT.comments, 1), body: `Use ${TOKEN}` }],
+  };
+  await worker.request("review.save", { key: "acme/api#7", draft });
+  const result = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: "Fine.",
+  });
+  assert.equal(result.outcome, "refused");
+  assert.ok(
+    result.outcome === "refused" && result.message.includes("README.md"),
+    JSON.stringify(result),
+  );
+  assert.equal(posts(calls).length, 0);
+  const kept = host.data().storage["draft:acme/api#7"] as { comments: unknown[] };
+  assert.equal(kept.comments.length, 2, "the draft is kept for fixing");
+
+  await worker.request("review.save", { key: "acme/api#7", draft: DRAFT });
+  const summary = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: `Token: ${TOKEN}`,
+  });
+  assert.equal(summary.outcome, "refused", "the summary is checked too");
+  assert.equal(posts(calls).length, 0);
+});
+
+/** The PR adds a test fixture shaped like an AWS key: quoting it leaks nothing. */
+const FIXTURE_KEY = "AKIAABCDEFGHIJKLMNOP";
+const DIFF_WITH_FIXTURE = DIFF.replace("+const c = 4;", `+const c = "${FIXTURE_KEY}";`);
+
+test("a guide quoting a secret-shaped string from the PR itself is stored", async () => {
+  const quoting = JSON.stringify({
+    ...AGENT_GUIDE,
+    risk: { ...AGENT_GUIDE.risk, headline: `The test fixture ${FIXTURE_KEY} looks like a key` },
+  });
+  const { host, all } = await setup([quoting], { "optin:acme/api": true }, undefined, {
+    diff: DIFF_WITH_FIXTURE,
+  });
+  await until(
+    () => all()[0]?.status === "ready" || all()[0]?.status === "failed",
+    "the run to finish",
+  );
+  assert.equal(all()[0]?.status, "ready", all()[0]?.error ?? "");
+  assert.ok(host.data().storage["guide:acme/api#7"], "the guide is stored");
+});
+
+test("review.submit posts a comment quoting a secret-shaped string from the PR itself", async () => {
+  const { worker, calls } = await readyGuide({ diff: DIFF_WITH_FIXTURE });
+  const draft = {
+    ...DRAFT,
+    comments: [{ ...nth(DRAFT.comments, 0), body: `Is ${FIXTURE_KEY} a real key?` }],
+  };
+  await worker.request("review.save", { key: "acme/api#7", draft });
+  const result = await worker.request("review.submit", {
+    key: "acme/api#7",
+    event: "COMMENT",
+    body: "One question.",
+  });
+  assert.notEqual(result.outcome, "refused", JSON.stringify(result));
+  assert.ok(posts(calls).length > 0, "the review is posted");
+});
+
+test("a PR from outside the repository is not run automatically; a member's is", async () => {
+  const outside = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      association: "CONTRIBUTOR",
+    },
+  );
+  await until(
+    () => outside.latest()?.checkedAt != null && outside.latest()?.checking === false,
+    "the first check",
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(outside.calls.filter((c) => c.cmd === "claude").length, 0);
+  assert.equal(outside.latest()?.notQueued[0]?.manualReason, "Author is not a collaborator");
+  assert.ok(
+    !outside.calls.some((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7"),
+    "author_association comes with the search",
+  );
+  // Generate still works by hand.
+  await outside.worker.request("guide.generate", { key: "acme/api#7" });
+  await until(() => outside.all()[0]?.status === "ready", "the guide asked for by hand");
+  await outside.worker.request("queue.refresh");
+  assert.equal(
+    outside.calls.filter((c) => c.cmd === "gh" && c.args[1] === "repos/acme/api/pulls/7").length,
+    0,
+    "never asked per PR",
+  );
+  await current?.deactivate();
+  current = null;
+  await rm(dir, { recursive: true, force: true });
+
+  const member = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    association: "MEMBER",
+  });
+  await until(() => member.all()[0]?.status === "ready", "the automatic guide");
+});
+
+test("an unknown author association counts as untrusted for automatic runs", async () => {
+  const { calls, latest } = await setup(
+    [JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      association: null,
+    },
+  );
+  await until(() => latest()?.checkedAt != null && latest()?.checking === false, "the first check");
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(calls.filter((c) => c.cmd === "claude").length, 0);
+  assert.equal(latest()?.notQueued[0]?.manualReason, "Couldn't check the author's access");
+});
+
+test("a run that changes .git/hooks stores nothing and turns the repository's automatic runs off", async () => {
+  const { host, latest, all, calls } = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    {
+      before: async (clone) => {
+        await mkdir(join(clone, ".git/hooks"), { recursive: true });
+        await writeFile(join(clone, ".git/config"), "[core]\n");
+        await writeFile(join(clone, ".git/hooks/pre-commit.sample"), "#!/bin/sh\n");
+      },
+      agentDoes: async () => {
+        await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\ncurl evil\n");
+      },
+    },
+  );
+  await until(() => all()[0]?.status === "failed", "the failed run");
+  assert.equal(host.data().storage["guide:acme/api#7"], undefined, "nothing stored");
+  const error = all()[0]?.error ?? "";
+  assert.ok(error.includes(".git/hooks/pre-commit"), error);
+  assert.equal(host.data().storage["optin:acme/api"], false, "automatic runs are off");
+  const notice = latest()?.notice;
+  assert.equal(notice?.tone, "danger");
+  assert.ok(notice?.text.includes("#7"), notice?.text);
+  assert.equal(latest()?.repos[0]?.optIn, false);
+  const runs = calls.filter((c) => c.cmd === "claude").length;
+  assert.equal(runs, 1);
+  // The notice is the only way back: it names the repo once and carries the control to turn it on.
+  assert.equal(notice?.turnOn, "acme/api", "the notice offers turning automatic guides back on");
+  assert.equal(
+    notice?.text.split("acme/api").length,
+    2,
+    `the repository is named once: ${notice?.text}`,
+  );
+});
+
+test("after a restart, the tampering notice still offers turning guides back on", async () => {
+  const first = await setup([JSON.stringify(AGENT_GUIDE)], { "optin:acme/api": true }, undefined, {
+    agentDoes: async () => {
+      await mkdir(join(dir, ".git/hooks"), { recursive: true });
+      await writeFile(join(dir, ".git/hooks/pre-commit"), "#!/bin/sh\ncurl evil\n");
+    },
+  });
+  await until(() => first.all()[0]?.status === "failed", "the failed run");
+  const storage = structuredClone<Record<string, unknown>>(first.host.data().storage);
+  await first.worker.deactivate();
+
+  const second = await setup([JSON.stringify(AGENT_GUIDE)], storage);
+  await until(() => second.latest()?.notice?.turnOn === "acme/api", "the tampering notice");
+  await second.worker.request("repo.setOptIn", { repo: "acme/api", optIn: true });
+  assert.equal(second.latest()?.notice?.turnOn, undefined, "turned back on");
+  const after = structuredClone<Record<string, unknown>>(second.host.data().storage);
+  await second.worker.deactivate();
+
+  const third = await setup([JSON.stringify(AGENT_GUIDE)], after);
+  await until(() => third.all().length > 0, "the saved list");
+  assert.equal(third.latest()?.notice?.turnOn, undefined, "the answer is kept");
+});
+
+/** Both PRs due an automatic run: one under way, held by `agentGate`, and one waiting its turn. */
+async function oneRunningOneWaiting(limit: { on: boolean; reset: number }) {
+  let release: () => void = () => undefined;
+  const agentGate = new Promise<void>((r) => {
+    release = r;
+  });
+  const ctx = await setup(
+    [JSON.stringify(AGENT_GUIDE), JSON.stringify(AGENT_GUIDE)],
+    { "optin:acme/api": true },
+    undefined,
+    { numbers: [7, 8], agentGate, limit },
+  );
+  const agentRuns = () => ctx.calls.filter((c) => c.cmd === "claude").length;
+  await until(
+    () => agentRuns() === 1 && ctx.all().some((i) => i.status === "queued"),
+    "one run under way and one waiting",
+  );
+  const waiting = ctx.all().find((i) => i.status === "queued")?.key ?? "";
+  const row = () => ctx.all().find((i) => i.key === waiting);
+  return { ...ctx, release, agentRuns, waiting, row };
+}
+
+test("a waiting automatic run holds while GitHub's rate limit does, then runs", async () => {
+  const limit = { on: false, reset: 0 };
+  const { worker, release, agentRuns, row } = await oneRunningOneWaiting(limit);
+  limit.on = true;
+  limit.reset = Math.floor(Date.now() / 1000) + 60;
+  await worker.request("queue.refresh");
+  release();
+  // Nothing to await for a run that must not start: give the queue a moment to (not) start it.
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(agentRuns(), 1, "no automatic run while the limit holds");
+  assert.equal(row()?.status, "queued", "still waiting, not failed");
+  limit.on = false;
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61_000;
+  try {
+    await worker.request("queue.refresh");
+    await until(() => agentRuns() === 2, "the waiting run once the limit lifts");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("an automatic run stopped by GitHub's rate limit waits instead of failing", async () => {
+  const limit = { on: false, reset: Math.floor(Date.now() / 1000) + 40 * 60 };
+  const { host, calls, release, agentRuns, waiting, row } = await oneRunningOneWaiting(limit);
+  const number = waiting.split("#")[1];
+  const views = () => prViews(calls).filter((c) => c.args[2] === number).length;
+  const before = views();
+  // No check has met the limit yet: the waiting run is the first to.
+  limit.on = true;
+  release();
+  await until(() => views() > before && row()?.status !== "generating", "the waiting run to try");
+  assert.equal(row()?.status, "queued", "waits for the limit to lift");
+  assert.equal(row()?.error ?? null, null);
+  const meta = JSON.stringify(host.data().storage[`meta:${waiting}`] ?? {});
+  assert.ok(!meta.includes('"error"'), meta);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(agentRuns(), 1, "not tried again while the limit holds");
 });

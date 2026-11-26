@@ -21,8 +21,10 @@ until you press **Post to GitHub**.
 
 ## Install
 
-You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and `claude` or `codex` signed
-in.
+You need Orca 1.4.259 or newer, `gh` signed in (`gh auth status`), and one agent CLI installed and
+signed in: `claude` (Claude Code), `codex` (Codex), `cursor-agent` (Cursor), `copilot` (GitHub
+Copilot), `gemini` (Gemini CLI), `droid` (Factory Droid), `qwen` (Qwen Code) or `pi` (Pi). Pick it
+in Settings. Claude Code and Codex have been checked end to end with `scripts/verify-agent.ts`.
 
 ```sh
 orca plugin install adamthewilliam/orca-pr-tour
@@ -39,7 +41,7 @@ Guides are read from a local clone, so add each repository you review to Orca as
 
 <img src="assets/panel-queue.png" width="400" alt="The Reviews panel listing a PR with a medium risk badge and its tour progress">
 
-The panel checks GitHub every 5 minutes, or when you press refresh. It lists:
+The panel checks GitHub every 2 minutes, or when you press refresh. It lists:
 
 - PRs that request **your** review
 - PRs for the **teams** you list in Settings, tagged with the team
@@ -105,16 +107,34 @@ In Settings → Plugins → PR Tour:
 
 ## What the agent can do
 
-The agent runs in the background with read-only tools:
+The agent runs in the background with read-only tools. Codex runs commands, but only inside its own
+read-only OS sandbox; the others get file tools and no shell. PR Tour writes the PR's files for the
+agent to read.
 
-- Claude Code: `claude -p --tools Read,Grep,Glob,Bash`, with Bash limited to
-  `git diff/show/log`, no MCP servers, no project settings from the PR's repo and no saved
-  session.
-- Codex: `codex exec --sandbox read-only`.
+- Claude Code: `claude -p` with only `Read`, `Grep` and `Glob`, no MCP servers, no project settings
+  or hooks, and no saved session.
+- Codex: `codex exec --sandbox read-only`, its own OS sandbox.
+- Cursor: `cursor-agent --print --mode ask`, its read-only mode; MCP servers stay off. The clone's
+  `.cursor/rules`, `AGENTS.md` and `CLAUDE.md` still load: no flag turns them off.
+- GitHub Copilot: `copilot --prompt` with only `view`, `glob` and `grep`; writes, shell, memory and
+  built-in MCP servers are denied.
+- Gemini CLI: `gemini --approval-mode plan -e none --allowed-mcp-server-names ""`, its read-only
+  mode with no extensions or MCP servers. The clone's `GEMINI.md` and workspace settings still load.
+- Factory Droid: `droid exec --only-tools Read,Grep,Glob,LS`.
+- Qwen Code: `qwen --approval-mode plan --safe-mode`, its read-only mode with the clone's MCP
+  servers, hooks, context files, extensions and skills off.
+- Pi: `pi --print --tools read`, with no extensions, skills, context files or saved session.
 
-The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. Guides
-are written to `.pr-tour/` in the repo, which is added to `.git/info/exclude` so it never shows up
-in `git status`.
+Cursor and GitHub Copilot take the prompt on the command line, so their prompts carry less diff
+(the prompt may take about 100,000 bytes, 30,000 on Windows); the rest is read from files.
+
+The PR is fetched into `refs/pr-tour/*` in your clone, so your working tree isn't touched. It is
+fetched over HTTPS from the PR's repository with `gh`'s credentials, not through your `origin`
+remote, so an SSH key that asks for approval on each use (such as Touch ID) never blocks a
+background run. Guides
+are written to `.orca/pr-tour/` in the repo. During a run, the PR's files the agent reads are written to
+`.orca/pr-tour-runs/<pr>/` and removed when it ends. Both folders are added to `.git/info/exclude`
+so they never show up in `git status`.
 
 ## Limits
 

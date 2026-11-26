@@ -196,7 +196,7 @@ span.bd-where { padding: 0 10px; }
 .review-status { font-size: 12.5px; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-/* A list of files outside the stops (Not in the tour, Since your last review): each opens its diff. */
+/* A list of files outside the stops (Not in the tour): each opens its diff. */
 .file-rows { list-style: none; margin: 0; padding: 0; }
 .file-rows > li { border-top: 1px solid var(--line); padding: 6px 0; }
 
@@ -212,6 +212,14 @@ span.bd-where { padding: 0 10px; }
 .start-actions { flex: none; padding-top: 2px; }
 .restart-confirm .btn.danger { color: var(--danger); border-color: var(--danger); }
 .meta .tag { display: inline-flex; vertical-align: baseline; height: 20px; }
+.since { display: flex; flex-direction: column; gap: 6px; margin-top: -10px; }
+.since-line .link { white-space: nowrap; margin-left: 4px; }
+.since-rows { list-style: none; margin: 0; padding: 0; font-size: 13.5px; color: var(--fg); }
+.since-row { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); }
+.since-row:last-child { border-bottom: 1px solid var(--line); }
+.since-row .mono { overflow-wrap: anywhere; }
+.since-note .tag { margin-left: 8px; }
+@media (max-width: 640px) { .since-row { grid-template-columns: minmax(0, 1fr) auto; } .since-row .since-note { grid-column: 1 / -1; grid-row: 2; } }
 .ov-top { display: flex; flex-direction: column; gap: 22px; }
 html.w-cols .ov-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 48px; align-items: start; }
 .head-actions { flex: none; }
@@ -244,6 +252,7 @@ html.w-cols .provenance { text-align: right; }
 /* Where the tour starts or resumes: the accent outline, and the mark says it in words. */
 .tour-step.here { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .tour-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 12px var(--mono); color: var(--muted); }
+.tour-step-changed { font: 500 12px var(--sans); color: var(--muted); }
 .tour-step-mark { font: 600 12px var(--sans); }
 .tour-step-mark.start, .tour-step-mark.resume { color: var(--accent); }
 .tour-step-mark.seen { color: var(--add); }

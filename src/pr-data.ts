@@ -181,7 +181,7 @@ async function placeAt(
   const refs = prRefs(number);
   const present = (await hasCommit(clone.path, commit)) && (await hasCommit(clone.path, refs.base));
   if (!present) {
-    await fetchPr(clone, { number, baseRefName: baseRef });
+    await fetchPr(clone, repo, { number, baseRefName: baseRef });
     if (!(await hasCommit(clone.path, commit)))
       throw fail(
         "unavailable",

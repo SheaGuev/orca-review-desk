@@ -1,6 +1,6 @@
 // One agent run for one PR: fetch it, decide what the tour skips, build the prompt, ask the agent
 // (once more if its reply does not fit), and fill in everything the agent is never trusted with.
-import { runAgent } from "./agent";
+import { AGENTS, diffBudget, runAgent, type AgentReply } from "./agent";
 import { enforceCoverage } from "./coverage";
 import {
   budgetDiff,
@@ -15,14 +15,18 @@ import {
   diffUpTo,
   fetchPr,
   hasCommit,
+  hidePrTourFolders,
   LOCKFILE_EXCLUDES,
   logBetween,
   prFiles,
   type Clone,
+  type PrRefs,
 } from "./git";
+import { watchGit } from "./git-guard";
 import { myReviewComments, type PrDetails } from "./github";
 import type { PrPlace, Triage } from "./pr-data";
-import { buildPrompt, buildRepairPrompt, type SinceInput } from "./prompt";
+import { buildPrompt, buildRepairPrompt, type PromptInput, type SinceInput } from "./prompt";
+import { removeRunFiles, runDir, writeRunFiles, type RunFiles } from "./run-files";
 import {
   extractJson,
   parseAgentGuide,
@@ -36,6 +40,7 @@ import {
   type SkippedFile,
   type TourRules,
 } from "./schema";
+import { findSecret } from "./secrets";
 import type { Settings } from "./settings";
 
 const SINCE_DIFF_LIMIT = 60_000;
@@ -54,6 +59,12 @@ export type GuideRequest = {
   lastViewedCommit: () => Promise<string | undefined>;
   triage: (at: PrPlace, commit: string, baseRef: string) => Promise<Triage>;
   log: (text: string) => void;
+  /** Stops the git fetch and the agent when aborted (the worker stopping). */
+  signal?: AbortSignal;
+  /** Characters of diff the prompt may carry, in place of the agent's own; for `verify-agent`. */
+  diffBudget?: number;
+  /** Told each agent reply, both rounds; for `verify-agent`, which checks the tools called. */
+  onReply?: (reply: AgentReply) => void;
 };
 
 /** What changed since the commit the reviewer last saw; null when that is the head, or gone. */
@@ -130,7 +141,8 @@ async function askAgent(
   ctx: DiffContext,
 ): Promise<{ guide: AgentGuide; toolCalls: ToolCall[] }> {
   const { harness, model } = req.settings;
-  const first = await runAgent(harness, model, prompt, req.clone.path);
+  const first = await runAgent(harness, model, prompt, req.clone.path, req.signal);
+  req.onReply?.(first);
   const firstRead = readReply(first.text, ctx);
   if (firstRead.ok) return { guide: firstRead.guide, toolCalls: first.toolCalls };
   req.log(
@@ -139,9 +151,11 @@ async function askAgent(
   const second = await runAgent(
     harness,
     model,
-    buildRepairPrompt(prompt, first.text, firstRead.problems),
+    buildRepairPrompt(prompt, first.text, firstRead.problems, AGENTS[harness].maxPromptBytes),
     req.clone.path,
+    req.signal,
   );
+  req.onReply?.(second);
   const loose = parseAgentGuide(extractJson(second.text), undefined, { words: false, tour: false });
   if (!loose.ok) throw mismatch(loose.problems);
   const settled = settle(loose.guide, ctx);
@@ -171,6 +185,8 @@ type Facts = {
   /** Paths whose whole diff was in the prompt. */
   inPrompt: string[];
   toolCalls: readonly ToolCall[];
+  /** The run's prepared files, to the PR path each holds. */
+  prepared: ReadonlyMap<string, string>;
   skipped: SkippedFile[];
 };
 
@@ -210,7 +226,7 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
     coverage: coverage(
       changed,
       facts.inPrompt,
-      filesReadByAgent(facts.toolCalls, changed, req.clone.path),
+      filesReadByAgent(facts.toolCalls, changed, req.clone.path, facts.prepared),
     ),
     commentable: Object.fromEntries(
       changed.map((f) => [f, toRanges(facts.lines.get(f) ?? new Set())]),
@@ -219,10 +235,70 @@ function withFacts(req: GuideRequest, agent: AgentGuide, facts: Facts): PrGuide 
   };
 }
 
+/**
+ * Whatever is stored may be opened, shared or quoted into a review: no credentials in it. `known`
+ * is the PR's own text (diff, PR versions, title, body), public already, so quoting it is no leak.
+ */
+function refuseSecrets(guide: PrGuide, known: string): void {
+  const secret = findSecret(JSON.stringify(guide), known);
+  if (secret)
+    throw new Error(
+      `The agent's reply holds what looks like ${secret}, so the guide was not stored.`,
+    );
+}
+
 /** Fetches the PR, runs the agent and returns the finished guide; throws when the run fails. */
 export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
+  const { clone, pr } = req;
+  const refs = await fetchPr(clone, req.repo, pr, req.signal);
+  try {
+    return await runWithFiles(req, refs);
+  } finally {
+    // Success, failure or a stopped run: the PR's files never outlive it.
+    await removeRunFiles(clone.path, pr.number).catch((e: unknown) =>
+      req.log(`${req.key}: could not remove the run's files: ${message(e)}`),
+    );
+  }
+}
+
+/** What the agent would otherwise fetch with git: the PR's files and the diffs left out. */
+async function prepareRun(
+  req: GuideRequest,
+  refs: PrRefs,
+  files: readonly FileDiff[],
+  outside: readonly FileDiff[],
+  skipped: readonly SkippedFile[],
+): Promise<RunFiles> {
+  await hidePrTourFolders(req.clone.path).catch((e: unknown) =>
+    req.log(`could not add PR Tour's folders to git's exclude list: ${message(e)}`),
+  );
+  return writeRunFiles({
+    cwd: req.clone.path,
+    pr: req.pr.number,
+    headRef: refs.head,
+    files,
+    outside,
+    skipped: new Set(skipped.map((f) => f.path)),
+  });
+}
+
+/**
+ * The prompt's UTF-8 bytes without any diff: every file listed as left out, the most the rest of
+ * the prompt can take, so the diff budget of an argv agent leaves room for it.
+ */
+function promptOverhead(
+  input: Omit<PromptInput, "inPrompt" | "outside" | "run">,
+  files: readonly FileDiff[],
+): number {
+  const dir = runDir(input.pr.number);
+  const diffs = new Map(files.map((f) => [f.path, `${dir}/diffs/0000.diff`]));
+  return Buffer.byteLength(
+    buildPrompt({ ...input, inPrompt: [], outside: [...files], run: { dir, diffs } }),
+  );
+}
+
+async function runWithFiles(req: GuideRequest, refs: PrRefs): Promise<PrGuide> {
   const { key, repo, clone, pr, settings } = req;
-  const refs = await fetchPr(clone, pr);
   const { files, lines, ctx: base } = await prFiles(clone.path, refs);
   const changed = base.changed;
   // Decided before the run, so the agent spends no stop on them and can't skim a risky file.
@@ -231,25 +307,29 @@ export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
     skipped: new Map(triage.skipped.map((f) => [f.path, f.reason])),
     risky: new Map([...triage.risky].filter(([path]) => changed.includes(path))),
   };
-  const budget = budgetDiff(files);
   const since = await sinceInput(req, refs.head);
-  const prompt = buildPrompt({
+  const input = {
     repo,
     pr,
-    inPrompt: budget.inPrompt,
-    outside: budget.outside,
     since,
     extraInstructions: settings.extraInstructions,
-    headRef: refs.head,
-    baseRef: refs.base,
     skipped: triage.skipped,
     risky: rules.risky,
-  });
+  };
+  const budget = budgetDiff(
+    files,
+    req.diffBudget ?? diffBudget(settings.harness, promptOverhead(input, files)),
+  );
+  const run = await prepareRun(req, refs, files, budget.outside, triage.skipped);
+  const prompt = buildPrompt({ ...input, inPrompt: budget.inPrompt, outside: budget.outside, run });
   req.log(
     `generating ${key} at ${pr.headRefOid.slice(0, 7)} with ${settings.harness}${settings.model ? ` (${settings.model})` : ""}; skipped by design: ${triage.skipped.map((f) => `${f.path} (${f.reason})`).join(", ") || "none"}; must be deep: ${[...rules.risky.keys()].join(", ") || "none"}`,
   );
   const started = Date.now();
-  const { guide: replied, toolCalls } = await askAgent(req, prompt, { ...base, tour: rules });
+  // A run that changed the clone's git config or hooks stores nothing (GitTampered).
+  const { guide: replied, toolCalls } = await watchGit(clone.path, () =>
+    askAgent(req, prompt, { ...base, tour: rules }),
+  );
   const covered = enforceCoverage(replied.readingOrder, changed, replied.findings, rules);
   if (covered.fixed.length) req.log(`${key}: coverage: ${covered.fixed.join("; ")}`);
   const guide = withFacts(
@@ -261,9 +341,11 @@ export async function writeGuide(req: GuideRequest): Promise<PrGuide> {
       since,
       inPrompt: budget.inPrompt.map((f) => f.path),
       toolCalls,
+      prepared: run.byPrepared,
       skipped: triage.skipped,
     },
   );
+  refuseSecrets(guide, [pr.title, pr.body, ...files.map((f) => f.text), ...run.heads].join("\n"));
   logReady(req, guide, started);
   return guide;
 }

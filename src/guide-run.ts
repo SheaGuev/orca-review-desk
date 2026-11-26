@@ -1,14 +1,17 @@
 // One run from the queue: has the agent write the guide for a PR, stores it, and brings the
 // queue row up to date. A failure is recorded on the row, never thrown.
+import { AgentMissing } from "./agent";
+import type { AgentId } from "./agent-names";
 import type { Clones } from "./clones";
 import { message } from "./errors";
+import { GitTampered } from "./git-guard";
 import { prDetails } from "./github";
 import type { PrData } from "./pr-data";
 import { parsePrKey } from "./repo";
 import { RISK_WORD, withoutDetail, type PrGuide } from "./schema";
 import type { Store } from "./store";
 import type { TourProgress } from "./tour-progress";
-import { patchItem, type WorkerState } from "./worker-state";
+import { holdForRateLimit, isRateLimit, patchItem, type WorkerState } from "./worker-state";
 import { writeGuide } from "./write-guide";
 
 /** Orca refuses a storage value over 256 KiB; leave room for the key and encoding. */
@@ -25,6 +28,8 @@ type Deps = {
   tours: TourProgress;
   log: (text: string) => void;
   publish: () => void;
+  /** Aborted when the worker stops: the run's agent and git fetch stop, and nothing is recorded. */
+  signal: AbortSignal;
   /** Told once the guide is stored, before the person is notified (a command's guide opens here). */
   onWritten: (key: string) => Promise<void>;
   notify: (title: string, body: string) => Promise<void>;
@@ -63,6 +68,7 @@ async function write(deps: Deps, key: string): Promise<{ guide: PrGuide; head: s
     lastViewedCommit: async () => (await store.meta(key)).lastViewedCommit,
     triage: deps.prData.triage,
     log: deps.log,
+    signal: deps.signal,
   });
   return { guide, head: details.headRefOid };
 }
@@ -77,7 +83,8 @@ async function finish(
   const { state, store, log } = deps;
   const { guide } = written;
   const stored = await keep(store, key, guide);
-  state.agentSignedOut = false;
+  state.agentSignedOut = null;
+  state.agentMissing = null;
   // Ready before the tab asks; a failure here is retried when the tab asks.
   void deps.prData
     .breakdown(stored, key, stored.pr.commit)
@@ -101,24 +108,78 @@ async function finish(
     );
 }
 
-/** Records a failed run on the PR's row and in storage, against the head it was started for. */
-async function fail(deps: Deps, key: string, e: unknown, head: string | undefined): Promise<void> {
+/**
+ * A run changed its clone's git config or hooks: automatic runs stop for the whole repository
+ * (stored, with the notice, so a restart keeps both) until the person turns it back on.
+ */
+async function stopAutomatic(deps: Deps, key: string, paths: readonly string[]): Promise<void> {
+  const { state, store } = deps;
+  const repo = parsePrKey(key)?.repo;
+  if (!repo) return;
+  state.tampered = { key, repo, paths: [...paths] };
+  await Promise.all([store.setOptIn(repo, false), store.setTampered(state.tampered)]);
+  const known = state.repos.get(repo);
+  if (known) state.repos.set(repo, { ...known, optIn: false });
+  for (let i = state.queued.length - 1; i >= 0; i--) {
+    const q = state.queued[i];
+    if (q?.automatic && parsePrKey(q.key)?.repo === repo) {
+      state.queued.splice(i, 1);
+      patchItem(state, q.key, { status: "none" });
+    }
+  }
+  for (const t of state.tracked.values()) {
+    if (t.item.repo !== repo) continue;
+    t.auto = false;
+    t.item = { ...t.item, manualReason: t.item.manualReason ?? "Repository turned off" };
+  }
+}
+
+/**
+ * Records a failed run on the PR's row and in storage, against the head it was started for;
+ * `harness` is the agent the run used.
+ */
+async function fail(
+  deps: Deps,
+  key: string,
+  e: unknown,
+  head: string | undefined,
+  harness: AgentId,
+): Promise<void> {
   const { state, store } = deps;
   const error = message(e);
-  if (SIGNED_OUT.test(error)) state.agentSignedOut = true;
+  if (SIGNED_OUT.test(error)) state.agentSignedOut = harness;
+  if (e instanceof AgentMissing) state.agentMissing = harness;
   deps.log(`${key}: ${error}`);
+  if (e instanceof GitTampered) await stopAutomatic(deps, key, e.paths);
   const meta = await store.meta(key);
   await store.setMeta(key, { ...meta, error, errorCommit: head });
   patchItem(state, key, { status: "failed", error });
 }
 
+/**
+ * An automatic run a `gh` call stopped at GitHub's rate limit (not the agent's own limit): no
+ * failure, but back at the front of the queue, held with every automatic run until it lifts.
+ */
+async function waitForRateLimit(deps: Deps, key: string, error: string): Promise<void> {
+  deps.log(`${key}: ${error}; waiting for GitHub's rate limit to lift`);
+  await holdForRateLimit(deps.state);
+  deps.state.queued.unshift({ key, automatic: true });
+  patchItem(deps.state, key, { status: "queued", error: null });
+}
+
 export function createGuideRun(deps: Deps): (key: string, automatic: boolean) => Promise<void> {
   return async function generate(key, automatic) {
     const headBefore = deps.state.tracked.get(key)?.item.headSha;
+    const harness = deps.state.settings.harness;
     try {
       await finish(deps, key, await write(deps, key), automatic);
     } catch (e) {
-      await fail(deps, key, e, headBefore);
+      const error = message(e);
+      // The worker is going away: a stopped run is no failure, and storage may be gone already.
+      if (deps.signal.aborted) deps.log(`${key}: stopped with the worker`);
+      else if (automatic && error.startsWith("gh ") && isRateLimit(error))
+        await waitForRateLimit(deps, key, error);
+      else await fail(deps, key, e, headBefore, harness);
     } finally {
       deps.publish();
     }

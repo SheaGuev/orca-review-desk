@@ -12,5 +12,25 @@ test("a failed run's error becomes a short reason a person can act on", () => {
     "didn't match the format",
   );
   assert.equal(failureReason("git diff failed: fatal: bad object"), "see logs");
+  assert.equal(
+    failureReason(
+      "The agent's reply holds what looks like a GitHub token, so the guide was not stored.",
+    ),
+    "reply held a secret",
+  );
+  assert.equal(
+    failureReason("The agent run changed .git/hooks/pre-commit in the clone. Nothing was stored"),
+    "changed the clone's git files",
+  );
+  assert.equal(
+    failureReason("Codex isn't installed: no codex on PATH · install it, then Generate"),
+    "not installed",
+  );
+  assert.equal(
+    failureReason(
+      "The prompt is too long for Cursor's command line (123,456 characters, at most 100,000)",
+    ),
+    "prompt too long",
+  );
   assert.equal(failureReason(null), "see logs");
 });

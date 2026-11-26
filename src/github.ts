@@ -1,5 +1,5 @@
 // What the worker asks GitHub, all through the person's own `gh` sign-in.
-import { runOk } from "./exec";
+import { runOk, type RunOptions } from "./exec";
 import { asList, asNumber, asObj, asString, isObj, parseJson } from "./json";
 import { repoSlugFromApiUrl } from "./repo";
 
@@ -11,6 +11,8 @@ export type SearchHit = {
   url: string;
   draft: boolean;
   updatedAt: string;
+  /** GitHub's `author_association` when the search gave one, so it need not be asked per PR. */
+  association?: string;
 };
 
 export type PrFile = { path: string; additions: number; deletions: number };
@@ -34,6 +36,25 @@ export type PrDetails = {
 
 export type ReviewComment = { id: number; path: string; line: number | null; body: string };
 
+/** `gh` calls in flight at once, whatever asks: more at once reads to GitHub as a burst. */
+export const GH_AT_ONCE = 3;
+let ghBusy = 0;
+const ghWaiting: (() => void)[] = [];
+
+/** `gh` with `args`, waiting for one of the GH_AT_ONCE slots. */
+async function gh(args: string[], options: RunOptions): Promise<string> {
+  if (ghBusy < GH_AT_ONCE) ghBusy++;
+  else await new Promise<void>((resolve) => ghWaiting.push(resolve));
+  try {
+    return await runOk("gh", args, options);
+  } finally {
+    // The slot passes straight to the next call waiting, if any.
+    const next = ghWaiting.shift();
+    if (next) next();
+    else ghBusy--;
+  }
+}
+
 let login: string | null = null;
 const canonical = new Map<string, string>();
 
@@ -46,8 +67,7 @@ export async function canonicalRepo(slug: string): Promise<string> {
   const known = canonical.get(slug);
   if (known) return known;
   try {
-    const out = await runOk(
-      "gh",
+    const out = await gh(
       ["repo", "view", slug, "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
       { timeoutMs: 30_000 },
     );
@@ -60,16 +80,14 @@ export async function canonicalRepo(slug: string): Promise<string> {
 }
 
 export async function currentLogin(): Promise<string> {
-  if (!login)
-    login = (await runOk("gh", ["api", "user", "--jq", ".login"], { timeoutMs: 30_000 })).trim();
+  if (!login) login = (await gh(["api", "user", "--jq", ".login"], { timeoutMs: 30_000 })).trim();
   return login;
 }
 
 /** Open PRs matching a GitHub search qualifier such as `user-review-requested:@me`. */
 export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
   const q = `is:pr is:open archived:false ${qualifier}`;
-  const out = await runOk(
-    "gh",
+  const out = await gh(
     [
       "api",
       "-X",
@@ -89,6 +107,10 @@ export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
     if (!isObj(item) || typeof item.number !== "number") return [];
     const repo = repoSlugFromApiUrl(asString(item.repository_url));
     if (!repo) return [];
+    const association =
+      typeof item.author_association === "string"
+        ? item.author_association.trim().toUpperCase()
+        : "";
     return [
       {
         repo,
@@ -98,6 +120,7 @@ export async function searchPrs(qualifier: string): Promise<SearchHit[]> {
         url: asString(item.html_url),
         draft: item.draft === true,
         updatedAt: asString(item.updated_at),
+        ...(association ? { association } : {}),
       },
     ];
   });
@@ -107,7 +130,7 @@ const DETAIL_FIELDS =
   "number,title,body,author,url,headRefOid,headRefName,baseRefName,isDraft,additions,deletions,changedFiles,createdAt,files";
 
 export async function prDetails(repo: string, ref: string | number): Promise<PrDetails> {
-  const out = await runOk("gh", ["pr", "view", String(ref), "-R", repo, "--json", DETAIL_FIELDS], {
+  const out = await gh(["pr", "view", String(ref), "-R", repo, "--json", DETAIL_FIELDS], {
     timeoutMs: 30_000,
   });
   return prDetailsFrom(parseJson(out), `${repo} ${ref}`);
@@ -145,11 +168,44 @@ export function prDetailsFrom(raw: unknown, what: string): PrDetails {
   };
 }
 
+/**
+ * GitHub's `author_association` for a PR (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...),
+ * which `gh pr view --json` does not offer; null when it could not be read.
+ */
+export async function authorAssociation(repo: string, number: number): Promise<string | null> {
+  try {
+    const out = await gh(["api", `repos/${repo}/pulls/${number}`, "--jq", ".author_association"], {
+      timeoutMs: 30_000,
+    });
+    return out.trim().toUpperCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When GitHub lifts the rate limit, from `gh api rate_limit` (which does not count against it):
+ * the latest reset among the resources used up, in ms; null when none is used up or the call fails.
+ */
+export async function rateLimitReset(): Promise<number | null> {
+  try {
+    const out = await gh(["api", "rate_limit"], { timeoutMs: 30_000 });
+    const resets = Object.values(asObj(asObj(parseJson(out)).resources)).flatMap((r) => {
+      const { remaining, reset } = asObj(r);
+      // A resource that does not say what remains is taken as used up.
+      const usedUp = typeof remaining !== "number" || remaining <= 0;
+      return usedUp && typeof reset === "number" && reset > 0 ? [reset * 1000] : [];
+    });
+    return resets.length ? Math.max(...resets) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Your own inline review comments on a PR, for "Since your last review". */
 export async function myReviewComments(repo: string, number: number): Promise<ReviewComment[]> {
   const me = await currentLogin();
-  const out = await runOk(
-    "gh",
+  const out = await gh(
     [
       "api",
       "--paginate",
@@ -246,8 +302,7 @@ export async function requestTimes(
     )
     .join("\n");
   const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-  const raw = await runOk(
-    "gh",
+  const raw = await gh(
     ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`],
     { timeoutMs: 30_000 },
   );

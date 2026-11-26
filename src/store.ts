@@ -4,8 +4,10 @@
 //   guide:<repo#n>  the guide            meta:<repo#n>   what you last saw, the last failure
 //   draft:<repo#n>  the review draft     tour:<repo#n>   tour progress
 //   optin:<repo>    automatic guides     runs            automatic runs today
+//   lastCheck       the PRs the last check found, so a restart lists them before checking
 import type { OrcaWorkerApi } from "orca/worker";
 import { asObj, asString, isObj, plainJson } from "./json";
+import type { QueueItem } from "./protocol";
 import { asDraft, type Draft } from "./review";
 import { parseGuide, SCHEMA_ID, upgradeGuide, type PrGuide, type PrGuideV1 } from "./schema";
 import { tourKey, type TourState } from "./tour";
@@ -23,6 +25,9 @@ export type Meta = {
   errorCommit?: string;
 };
 
+/** The last run that changed its clone's git config or hooks, kept until its repo is turned on. */
+export type Tampered = { key: string; repo: string; paths: string[] };
+
 /** The local date, so the daily limit resets at the person's midnight, not UTC's. */
 export const localDay = (at = new Date()): string => at.toLocaleDateString("en-CA");
 
@@ -39,6 +44,100 @@ function asMeta(value: unknown): Meta {
   if (typeof value.error === "string") meta.error = value.error;
   if (typeof value.errorCommit === "string") meta.errorCommit = value.errorCommit;
   return meta;
+}
+
+/** A PR as the last check found it on GitHub; its guide and run state are read afresh. */
+export type SavedPr = Pick<
+  QueueItem,
+  | "key"
+  | "repo"
+  | "number"
+  | "title"
+  | "author"
+  | "url"
+  | "lane"
+  | "draft"
+  | "additions"
+  | "deletions"
+  | "changedFiles"
+  | "headSha"
+  | "hasClone"
+  | "requestedAt"
+  | "team"
+  | "ownedFiles"
+  | "manualReason"
+> & {
+  branch: string;
+  /** GitHub's author_association as last read; left out when it was not read. */
+  association?: string;
+};
+
+/** The PRs the last successful check found, and when it ran. */
+export type LastCheck = { checkedAt: number; prs: SavedPr[] };
+
+const isString = (v: unknown): v is string => typeof v === "string";
+const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+function asSavedPr(v: unknown): SavedPr | null {
+  if (!isObj(v)) return null;
+  const { key, repo, number, title, author, url, lane, draft, additions, deletions } = v;
+  const { changedFiles, headSha, hasClone, requestedAt, team, ownedFiles, manualReason } = v;
+  const { branch, association } = v;
+  if (
+    !isString(key) ||
+    !isString(repo) ||
+    !isString(title) ||
+    !isString(author) ||
+    !isString(url) ||
+    !isString(headSha) ||
+    !isString(branch) ||
+    !isNumber(number) ||
+    !isNumber(additions) ||
+    !isNumber(deletions) ||
+    !isNumber(changedFiles) ||
+    !isNumber(requestedAt) ||
+    (lane !== "user" && lane !== "team" && lane !== "authored") ||
+    typeof draft !== "boolean" ||
+    typeof hasClone !== "boolean" ||
+    !(team === null || isString(team)) ||
+    !(ownedFiles === null || isNumber(ownedFiles)) ||
+    !(manualReason === null || isString(manualReason))
+  )
+    return null;
+  return {
+    key,
+    repo,
+    number,
+    title,
+    author,
+    url,
+    lane,
+    draft,
+    additions,
+    deletions,
+    changedFiles,
+    headSha,
+    hasClone,
+    requestedAt,
+    team,
+    ownedFiles,
+    manualReason,
+    branch,
+    ...(isString(association) ? { association } : {}),
+  };
+}
+
+/** The saved list, or null when there is none or any part of it is not in this shape. */
+function asLastCheck(v: unknown): LastCheck | null {
+  if (!isObj(v) || !isNumber(v.checkedAt) || !Array.isArray(v.prs)) return null;
+  const prs = v.prs.map(asSavedPr);
+  return prs.every((p) => p !== null) ? { checkedAt: v.checkedAt, prs } : null;
+}
+
+function asTampered(v: unknown): Tampered | null {
+  if (!isObj(v) || !isString(v.key) || !isString(v.repo) || !Array.isArray(v.paths)) return null;
+  const paths = v.paths.filter(isString);
+  return { key: v.key, repo: v.repo, paths };
 }
 
 export type Store = ReturnType<typeof createStore>;
@@ -113,6 +212,11 @@ export function createStore(storage: Storage) {
       await storage.set("runs", { day: localDay(), count });
       return count;
     },
+    lastCheck: async (): Promise<LastCheck | null> => asLastCheck(await storage.get("lastCheck")),
+    setLastCheck: (value: LastCheck): Promise<void> => storage.set("lastCheck", plainJson(value)),
+    tampered: async (): Promise<Tampered | null> => asTampered(await storage.get("tampered")),
+    setTampered: (value: Tampered | null): Promise<void> =>
+      value ? storage.set("tampered", plainJson(value)) : storage.delete("tampered"),
     prune: (tracked: (key: string) => boolean, cutoff: number): Promise<void> =>
       prune(storage, tracked, cutoff),
   };

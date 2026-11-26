@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { linesByFile, splitDiff, type FileDiff } from "./diff";
 import { run, runOk } from "./exec";
 import { LOCKFILES, repoSlugFromRemote } from "./repo";
+import { GUIDES, RUNS } from "./run-files";
 import type { DiffContext } from "./schema";
 
 /** A repository added to Orca as a project, on this machine. */
@@ -23,32 +24,52 @@ export const prRefs = (number: number): PrRefs => ({
   base: `refs/pr-tour/base-${number}`,
 });
 
-/** `owner/repo` (lowercase) of the folder's `origin`, or null when it has none on GitHub. */
-export async function originSlug(path: string): Promise<string | null> {
+/** The folder's `origin` URL, or null when it has none. */
+async function originUrl(path: string): Promise<string | null> {
   const remote = await run("git", ["-C", path, "remote", "get-url", "origin"], {
     timeoutMs: 10_000,
   }).catch(() => null);
-  return remote?.code === 0 ? repoSlugFromRemote(remote.stdout) : null;
+  return remote?.code === 0 ? remote.stdout : null;
 }
 
+/** `owner/repo` (lowercase) of the folder's `origin`, or null when it has none on GitHub. */
+export async function originSlug(path: string): Promise<string | null> {
+  const url = await originUrl(path);
+  return url === null ? null : repoSlugFromRemote(url);
+}
+
+/**
+ * Fetches the PR's head and base into `prRefs`, over HTTPS from `repo` (`owner/repo`, the PR's
+ * own, not origin's, which may be an old name or a fork) with gh's credentials. Never through
+ * origin: an ssh key that asks for approval on each use (Touch ID) fails in a background run.
+ * The empty `credential.helper=` drops any other helper, so no keychain prompt either. Always
+ * github.com, whatever host name origin uses for it (an ssh alias, `ssh.github.com`): only
+ * github.com clones are matched to PRs.
+ */
 export async function fetchPr(
   clone: Clone,
+  repo: string,
   pr: { number: number; baseRefName: string },
+  signal?: AbortSignal,
 ): Promise<PrRefs> {
   const refs = prRefs(pr.number);
   await runOk(
     "git",
     [
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.helper=!gh auth git-credential",
       "-C",
       clone.path,
       "fetch",
       "--no-tags",
       "--quiet",
-      "origin",
+      `https://github.com/${repo}.git`,
       `+refs/pull/${pr.number}/head:${refs.head}`,
       `+refs/heads/${pr.baseRefName}:${refs.base}`,
     ],
-    { timeoutMs: 180_000 },
+    { timeoutMs: 180_000, signal },
   );
   return refs;
 }
@@ -108,16 +129,31 @@ export async function logBetween(cwd: string, from: string, to: string): Promise
   return out.trim();
 }
 
-/** Adds `.pr-tour/` to the repository's own exclude list, so guides never show in `git status`. */
-export async function hideGuideFolder(workspacePath: string): Promise<void> {
+/** The repository's shared `.git` folder (config, hooks), also from a linked worktree. */
+export async function gitCommonDir(workspacePath: string): Promise<string> {
   const out = await runOk("git", ["-C", workspacePath, "rev-parse", "--git-common-dir"], {
     timeoutMs: 10_000,
   });
   const common = out.trim();
-  const infoDir = join(isAbsolute(common) ? common : join(workspacePath, common), "info");
+  return isAbsolute(common) ? common : join(workspacePath, common);
+}
+
+/** What PR Tour writes in a clone: guides, and each run's files. */
+// `.pr-tour/` is where older versions wrote guides; kept so any left there stay hidden.
+const HIDDEN = [`${GUIDES}/`, `${RUNS}/`, ".pr-tour/"];
+
+/**
+ * Adds PR Tour's folders to the repository's own exclude list, so guides and run files never
+ * show in `git status`.
+ */
+export async function hidePrTourFolders(workspacePath: string): Promise<void> {
+  const infoDir = join(await gitCommonDir(workspacePath), "info");
   const exclude = join(infoDir, "exclude");
   const current = await readFile(exclude, "utf8").catch(() => "");
-  if (current.split("\n").some((l) => l.trim() === ".pr-tour/")) return;
+  const lines = new Set(current.split("\n").map((l) => l.trim()));
+  const missing = HIDDEN.filter((p) => !lines.has(p));
+  if (!missing.length) return;
   await mkdir(infoDir, { recursive: true });
-  await appendFile(exclude, `${current.endsWith("\n") || current === "" ? "" : "\n"}.pr-tour/\n`);
+  const sep = current.endsWith("\n") || current === "" ? "" : "\n";
+  await appendFile(exclude, `${sep}${missing.map((p) => `${p}\n`).join("")}`);
 }

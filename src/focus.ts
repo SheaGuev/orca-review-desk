@@ -57,7 +57,7 @@ async function focusedPr(f: Focused): Promise<{ repo: string; branch: string } |
 }
 
 const trackedFor = (state: WorkerState, repo: string, branch: string): Tracked | undefined =>
-  [...state.tracked.values()].find((t) => t.item.repo === repo && t.details.headRefName === branch);
+  [...state.tracked.values()].find((t) => t.item.repo === repo && t.branch === branch);
 
 async function showStatusBar(f: Focused): Promise<void> {
   const { host, state } = f.deps;

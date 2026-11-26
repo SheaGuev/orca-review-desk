@@ -128,6 +128,15 @@ test("the budget takes whole files: source by size, then config, tests, docs", (
   );
 });
 
+test("the diff budget counts UTF-8 bytes, as a command line does", () => {
+  // 60 characters, 120 bytes: over a 100 budget.
+  const wide = { ...file("src/wide.ts", 0, 1), text: "é".repeat(60) };
+  assert.deepEqual(
+    budgetDiff([wide], 100).outside.map((f) => f.path),
+    ["src/wide.ts"],
+  );
+});
+
 test("coverage comes from the files the agent read with its tools", () => {
   const stdout = JSON.stringify([
     { type: "system", subtype: "init" },
@@ -139,8 +148,8 @@ test("coverage comes from the files the agent read with its tools", () => {
           { type: "tool_use", name: "Read", input: { file_path: "/repo/src/a.ts" } },
           {
             type: "tool_use",
-            name: "Bash",
-            input: { command: "git -C /repo show refs/pr-tour/pr-7:src/b.ts | head -50" },
+            name: "Read",
+            input: { file_path: "/repo/.orca/pr-tour-runs/7/head/0002.txt" },
           },
         ],
       },
@@ -151,11 +160,13 @@ test("coverage comes from the files the agent read with its tools", () => {
         content: [
           {
             type: "tool_use",
-            name: "Bash",
-            input: {
-              command:
-                "git diff refs/pr-tour/base-7...refs/pr-tour/pr-7 -- 'docs/' && git log --oneline -3",
-            },
+            name: "Read",
+            input: { file_path: ".orca/pr-tour-runs/7/diffs/0003.diff" },
+          },
+          {
+            type: "tool_use",
+            name: "Read",
+            input: { file_path: "/repo/.orca/pr-tour-runs/7/index.txt" },
           },
           { type: "tool_use", name: "Grep", input: { pattern: "x", path: "src/c.ts" } },
         ],
@@ -164,14 +175,38 @@ test("coverage comes from the files the agent read with its tools", () => {
     { type: "result", result: "{}" },
   ]);
   const calls = claudeToolCalls(stdout);
-  assert.equal(calls.length, 4);
-  const changed = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/x.md", "docs/y.md", "src/d.ts"];
-  const read = filesReadByAgent(calls, changed, "/repo");
-  assert.deepEqual(read, ["src/a.ts", "src/b.ts", "docs/x.md", "docs/y.md"]);
+  assert.equal(calls.length, 5);
+  const changed = ["src/a.ts", "src/b.ts", "src/c.ts", "docs/x.md", "src/d.ts"];
+  // The run's index: prepared files by path from the clone, to the PR path each one holds.
+  const prepared = new Map([
+    [".orca/pr-tour-runs/7/head/0002.txt", "src/b.ts"],
+    [".orca/pr-tour-runs/7/diffs/0003.diff", "docs/x.md"],
+    [".orca/pr-tour-runs/7/head/0003.txt", "docs/x.md"],
+  ]);
+  const read = filesReadByAgent(calls, changed, "/repo", prepared);
+  assert.deepEqual(read, ["src/a.ts", "src/b.ts", "docs/x.md"]);
   assert.deepEqual(coverage(changed, ["src/a.ts"], read), {
     inPrompt: ["src/a.ts"],
     readByAgent: read,
     notRead: ["src/c.ts", "src/d.ts"],
   });
+  // Without an index, only reads of the clone's own paths count.
+  assert.deepEqual(filesReadByAgent(calls, changed, "/repo"), ["src/a.ts"]);
   assert.deepEqual(claudeToolCalls('{"type":"result","result":"x"}'), []);
+});
+
+test("a read through the clone's resolved path still counts (macOS /var is /private/var)", () => {
+  const changed = ["src/report.ts", "src/a.ts"];
+  const prepared = new Map([[".orca/pr-tour-runs/7/diffs/0001.diff", "src/report.ts"]]);
+  const calls = [
+    {
+      name: "Read",
+      input: { file_path: "/private/var/folders/x/clone/.orca/pr-tour-runs/7/diffs/0001.diff" },
+    },
+    { name: "Read", input: { file_path: "/private/var/folders/x/clone/src/a.ts" } },
+  ];
+  assert.deepEqual(filesReadByAgent(calls, changed, "/var/folders/x/clone", prepared), [
+    "src/report.ts",
+    "src/a.ts",
+  ]);
 });
