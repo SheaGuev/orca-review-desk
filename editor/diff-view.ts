@@ -4,7 +4,15 @@
 // the rest of the guide uses: "+" opens the composer under the line, Shift+"+" on a second line
 // makes it a range. Findings and pending comments sit under their line, and a line with a pending
 // comment carries a marker in its gutter. Diff text goes in as text nodes only.
-import { diffRows, focusPieces, gutterDigits, rowOfLine, type DiffFile } from "../src/diff-model";
+import {
+  contextGaps,
+  diffRows,
+  focusPieces,
+  gutterDigits,
+  rowOfLine,
+  type DiffFile,
+  type FileLines,
+} from "../src/diff-model";
 import { message } from "../src/errors";
 import type { LineRange, PrGuide } from "../src/schema";
 import { openFileComposer, wireRows } from "./diff-composers";
@@ -15,9 +23,11 @@ import {
   drawNotes,
   RENDER_FIRST,
   setFull,
+  textOf,
+  type FileMemory,
   type View,
 } from "./diff-draw";
-import { buildFrame } from "./diff-frame";
+import { buildFrame, drawFullToggle } from "./diff-frame";
 import { notice } from "./diff-rows";
 import { h } from "./dom";
 import { tokensFor, type RowTokens } from "./highlight";
@@ -27,6 +37,10 @@ import type { Viewed } from "./viewed";
 export type DiffViewOptions = {
   guide: PrGuide;
   load: (path: string) => Promise<DiffFile>;
+  /** Loads a file's PR-head text, for the unchanged lines between hunks; leave out for none. */
+  loadLines?: (path: string) => Promise<FileLines>;
+  /** Where the view keeps how the reviewer left the file (whole file, lines opened). */
+  memory?: FileMemory | null;
   review: Review | null;
   openInOrca: (path: string) => void;
   /** Opens what an import in the file shown points to; without it, imports are plain text. */
@@ -94,6 +108,12 @@ function emptyView(opts: DiffViewOptions): View {
     focusComment: opts.focusComment ?? null,
     linkImports: opts.openImport !== undefined,
     findingOpen: new Map(),
+    loadLines: opts.loadLines ?? null,
+    memory: opts.memory ?? null,
+    gaps: new Map(),
+    expansions: new Map(),
+    text: null,
+    textToks: [],
   };
 }
 
@@ -109,6 +129,10 @@ function reset(v: View, path: string): void {
   v.rowEl = new Map();
   v.lineComposer = null;
   v.fileComposer = null;
+  v.gaps = new Map();
+  v.expansions = new Map();
+  v.text = null;
+  v.textToks = [];
   v.frame.lines.replaceChildren();
   v.frame.moreBox.replaceChildren();
 }
@@ -139,6 +163,8 @@ function drawLoaded(
   v.tokens = tokens ?? new Map();
   const focused = focusPieces(v.rows, v.focus);
   v.pieces = focused.pieces;
+  v.gaps = new Map((loaded.binary ? [] : contextGaps(v.rows, loaded.status)).map((g) => [g.at, g]));
+  restore(v);
   // Ranges that land on no row (the file changed under the guide) show the whole file.
   if (!focused.focused) {
     v.full = true;
@@ -151,6 +177,21 @@ function drawLoaded(
   drawBody(v);
   drawNotes(v);
   arriveAt(v, line);
+}
+
+/** How the reviewer left this file last time the tab drew it: whole file, lines opened. */
+function restore(v: View): void {
+  const saved = v.memory?.get();
+  if (!saved) return;
+  if (v.focus !== null && saved.full !== undefined) {
+    v.full = saved.full;
+    drawFullToggle(v.frame.fullToggle, v.full);
+  }
+  for (const from of saved.revealed ?? [])
+    if (v.pieces.some((p) => p.kind === "gap" && p.from === from)) v.revealed.add(from);
+  // Only with the file's text loaded, which show() waits for when there are any.
+  if (v.text)
+    for (const [at, e] of saved.expansions ?? []) if (v.gaps.has(at)) v.expansions.set(at, e);
 }
 
 /** A view with how it is shown: open or closed, and which load is the current one. */
@@ -228,6 +269,12 @@ async function show(c: Shown, path: string, line: number | null): Promise<void> 
   if ("failed" in loaded) {
     showFailure(c, path, line, loaded.failed);
     return;
+  }
+  // Lines opened between hunks last time: their text is needed before the first draw, so the
+  // file comes back the height it was and the tab's scroll position still lands.
+  if (c.opts.memory?.get()?.expansions?.length) {
+    await textOf(v);
+    if (run !== c.seq) return;
   }
   const colours = tokensFor(loaded);
   const timeout = new Promise<null>((done) => setTimeout(() => done(null), HIGHLIGHT_WAIT_MS));

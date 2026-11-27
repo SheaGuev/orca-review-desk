@@ -3,9 +3,15 @@
 // what it draws and returns nodes; editor/diff-view.ts keeps the state. Diff text goes in as text
 // nodes only.
 import {
+  EXPAND_STEP,
+  expandControls,
+  hiddenCount,
+  shownContext,
   wordChanges,
+  type ContextGap,
   type DiffFile,
   type DiffRow,
+  type Expansion,
   type FocusPiece,
   type Span,
 } from "../src/diff-model";
@@ -150,6 +156,77 @@ export function rowNode(
     h("span", { class: "code" }, ...codeText(r.text, overlays)),
   );
 }
+
+/** GitHub's fold arrows: up (lines above the next hunk), down (below the hunk before), or both ways. */
+const EXPAND_PATHS = {
+  up: "M8 3.5 4.5 7h2.75v5.5h1.5V7h2.75L8 3.5Z",
+  down: "M8 12.5 11.5 9H8.75V3.5h-1.5V9H4.5L8 12.5Z",
+  all: "M8 1.5 5 4.5h2.25v2h1.5v-2H11L8 1.5ZM8 14.5l3-3H8.75v-2h-1.5v2H5l3 3Z",
+} as const;
+
+function expandIcon(dir: keyof typeof EXPAND_PATHS): SVGElement {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS(SVG, "path");
+  path.setAttribute("d", EXPAND_PATHS[dir]);
+  svg.append(path);
+  return svg;
+}
+
+const EXPAND_LABEL = {
+  up: `Show ${EXPAND_STEP} more lines above`,
+  down: `Show ${EXPAND_STEP} more lines below`,
+  all: "Show the hidden lines",
+} as const;
+
+/**
+ * The row that stands for unchanged lines the diff leaves out, as on GitHub: expand arrows in the
+ * gutter, and the hunk header (if there is one) as its text.
+ */
+export function expanderNode(
+  g: ContextGap,
+  controls: readonly ("up" | "down" | "all")[],
+  text: string,
+  hidden: number | null,
+): HTMLElement {
+  const label = hidden === null ? "" : ` (${plural(hidden, "hidden line")})`;
+  return h(
+    "div",
+    { class: `dl hunk expander${controls.length > 1 ? " two" : ""}` },
+    h(
+      "span",
+      { class: "gut" },
+      ...controls.map((dir) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: `expand ${dir}`,
+            "data-at": String(g.at),
+            "data-dir": dir,
+            "aria-label": `${EXPAND_LABEL[dir]}${label}`,
+            title: `${EXPAND_LABEL[dir]}${label}`,
+          },
+          expandIcon(dir),
+        ),
+      ),
+    ),
+    h("span", { class: "code" }, text),
+  );
+}
+
+/** What a view knows about the unchanged lines between hunks, for drawing them. */
+export type Context = {
+  /** By the row index each gap sits above (`rows.length` for after the last hunk). */
+  gaps: ReadonlyMap<number, ContextGap>;
+  expansions: ReadonlyMap<number, Expansion>;
+  /** The PR-head file's lines, once loaded; until then gaps draw closed. */
+  lines: readonly string[] | null;
+  /** Colours of `lines`, by index (line - 1). */
+  toks: readonly (readonly Tok[])[];
+};
 
 /** The button standing in for the rows a stop's focus hides; `hidden` are those rows. */
 export function gapNode(
@@ -307,17 +384,57 @@ function importsOf(rows: readonly DiffRow[]): Map<number, ImportSpan[]> {
   return found;
 }
 
+/** A gap's opened lines and, while some stay hidden, its expander (with the hunk header's text). */
+function gapRows(
+  g: ContextGap,
+  header: string,
+  o: {
+    context: Context | null;
+    rowCount: number;
+    canComment: (line: number) => boolean;
+    linkImports: boolean;
+    add: (r: DiffRow, row: HTMLElement) => void;
+    nodes: DocumentFragment;
+  },
+): void {
+  const { context } = o;
+  const e = context?.expansions.get(g.at) ?? { top: 0, bottom: 0 };
+  const total = context?.lines?.length ?? null;
+  const shown = context?.lines ? shownContext(g, e, context.lines) : null;
+  const extra = (r: DiffRow) => {
+    const n = r.kind === "ctx" ? r.new : null;
+    const row = rowNode(r, o.canComment, {
+      toks: n === null ? undefined : context?.toks[n - 1],
+      links: o.linkImports ? importSpans(r.text) : undefined,
+    });
+    row.classList.add("x-ctx");
+    o.add(r, row);
+  };
+  shown?.above.forEach(extra);
+  const controls = expandControls(g, e, total, o.rowCount);
+  if (controls.length || (header && !shown?.open))
+    o.nodes.append(expanderNode(g, controls, header, hiddenCount(g, e, total)));
+  shown?.below.forEach(extra);
+}
+
 export function renderPieces(
   pieces: readonly FocusPiece[],
   rows: readonly DiffRow[],
   tokens: RowTokens,
   canComment: (line: number) => boolean,
   linkImports = false,
+  context: Context | null = null,
 ): { nodes: DocumentFragment; rowEl: Map<number, HTMLElement> } {
   const rowEl = new Map<number, HTMLElement>();
   const nodes = document.createDocumentFragment();
   const words = wordsOf(rows);
   const imports = linkImports ? importsOf(rows) : null;
+  const add = (r: DiffRow, row: HTMLElement) => {
+    if (isLineRow(r) && r.new !== null) rowEl.set(r.new, row);
+    nodes.append(row);
+  };
+  const drawGap = (g: ContextGap, header: string) =>
+    gapRows(g, header, { context, rowCount: rows.length, canComment, linkImports, add, nodes });
   for (const p of pieces) {
     const part = rows.slice(p.from, p.to);
     if (p.kind === "gap") {
@@ -326,15 +443,24 @@ export function renderPieces(
     }
     part.forEach((r, k) => {
       const i = p.from + k;
-      const row = rowNode(r, canComment, {
-        marks: words.get(i),
-        toks: tokens.get(i),
-        links: imports?.get(i),
-      });
-      if (isLineRow(r) && r.new !== null) rowEl.set(r.new, row);
-      nodes.append(row);
+      const gap = r.kind === "hunk" ? context?.gaps.get(i) : undefined;
+      if (gap && r.kind === "hunk") {
+        drawGap(gap, r.text);
+        return;
+      }
+      add(
+        r,
+        rowNode(r, canComment, {
+          marks: words.get(i),
+          toks: tokens.get(i),
+          links: imports?.get(i),
+        }),
+      );
     });
   }
+  const end = context?.gaps.get(rows.length);
+  const last = pieces.at(-1);
+  if (end && last?.kind === "show" && last.to === rows.length) drawGap(end, "");
   return { nodes, rowEl };
 }
 

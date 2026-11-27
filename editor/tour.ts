@@ -4,7 +4,7 @@
 // the review to post. Each view is drawn from scratch by editor/main.ts when the reviewer moves;
 // this file only draws.
 import type { Breakdown } from "../src/breakdown/assemble";
-import type { DiffFile } from "../src/diff-model";
+import type { DiffFile, FileLines } from "../src/diff-model";
 import { message } from "../src/errors";
 import type { ImportTarget } from "../src/import-resolve";
 import {
@@ -35,6 +35,7 @@ import {
   type TourView,
 } from "../src/tour";
 import { changesSection } from "./changes";
+import type { FileMemory } from "./diff-draw";
 import { createDiffView, type DiffView } from "./diff-view";
 import { isTestPath, spyOnCards, whenNear } from "./group";
 import { markRailFile, rail, type LineCounts } from "./rail";
@@ -95,6 +96,10 @@ export type TourContext = {
   setCollapsed: (index: number, collapsed: boolean) => void;
   restart: () => void;
   load: (path: string) => Promise<DiffFile>;
+  /** A file's PR-head text, for the unchanged lines between hunks. */
+  loadLines: (path: string) => Promise<FileLines>;
+  /** How the reviewer left `path` in this view, kept while the tab is away. */
+  remember: (path: string) => FileMemory;
   /** GitHub's Viewed checkbox per file. */
   viewed: Viewed;
   /** The PR's files by kind, for the overview's Changes; asked once per tab, again after a failure. */
@@ -138,15 +143,19 @@ function fileRow(
   tags?: Node[],
 ): HTMLElement {
   const target = line !== undefined;
+  const memory = ctx.remember(path);
   const view = createDiffView({
     guide: ctx.guide,
     load: ctx.load,
+    loadLines: ctx.loadLines,
+    memory,
     viewed: ctx.viewed,
     review: ctx.review,
     openInOrca: ctx.openInOrca,
     openImport: (from, specifier) => void openImport(ctx, from, specifier),
     variant: "listed",
-    expanded: target,
+    expanded: target || memory.get()?.open === true,
+    onToggle: (open) => memory.set({ open }),
     lead,
     tags,
     focusComment: target && ctx.target?.file === path ? ctx.target.commentId : null,
@@ -1112,19 +1121,27 @@ function fileCard(ctx: TourContext, c: Card): HTMLElement {
   const remembered = primary && ctx.state.collapsed.includes(c.index);
   if (remembered && target) ctx.setCollapsed(c.index, false);
   const test = isTestPath(c.path);
-  const open = target !== null || (!test && !(remembered && !target));
+  const memory = ctx.remember(c.path);
+  // Opened or closed by hand while the tab was last drawn wins over the defaults.
+  const kept = memory.get()?.open;
+  const open = target !== null || (kept ?? (!test && !(remembered && !target)));
   const eager = target !== null || c.k < EAGER_CARDS;
   let made: DiffView | null = null;
   const view = createDiffView({
     guide: ctx.guide,
     load: ctx.load,
+    loadLines: ctx.loadLines,
+    memory,
     viewed: ctx.viewed,
     review: ctx.review,
     openInOrca: ctx.openInOrca,
     openImport: (from, specifier) => void openImport(ctx, from, specifier),
     marks: primary ? (c.focus ?? null) : null,
     expanded: open && eager,
-    onToggle: primary ? (o) => ctx.setCollapsed(c.index, !o) : undefined,
+    onToggle: (o) => {
+      memory.set({ open: o });
+      if (primary) ctx.setCollapsed(c.index, !o);
+    },
     lead: [...cardLead(ctx, c.path), test ? testHint(() => made) : null],
     focusComment: target?.commentId ?? null,
   });

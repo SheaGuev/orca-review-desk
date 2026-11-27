@@ -2,7 +2,7 @@
 // and added lines; the base: unchanged and removed lines), so a construct spanning lines inside a
 // hunk is coloured as in the file. One that crosses a hunk edge can be coloured wrongly, as on
 // GitHub. Every code theme is tokenized at once, so switching themes only changes CSS.
-import { diffRows, type DiffFile, type DiffRow } from "../src/diff-model";
+import { diffRows, type DiffFile, type DiffRow, type FileLines } from "../src/diff-model";
 import { CODE_THEMES } from "./code-themes";
 import {
   GRAMMARS,
@@ -160,6 +160,33 @@ export function tokensFor(file: DiffFile): Promise<RowTokens> {
       ? Promise.resolve(empty)
       : highlightRows(file.path, diffRows(file.lines)).catch(() => empty);
     cache.set(file, tokens);
+  }
+  return tokens;
+}
+
+/** Past this many lines a file's own text is left plain: colouring it all would stall the tab. */
+const TEXT_HIGHLIGHT_LIMIT = 10_000;
+
+const textCache = new WeakMap<FileLines, Promise<readonly (readonly Tok[])[]>>();
+
+/**
+ * Colours for each line of a file's PR-head text (index = line - 1), for the unchanged lines
+ * drawn between hunks. Tokenized as one text, so they are coloured as in the file.
+ */
+export function tokensForText(path: string, text: FileLines): Promise<readonly (readonly Tok[])[]> {
+  let tokens = textCache.get(text);
+  if (!tokens) {
+    const lang = grammarFor(path);
+    tokens =
+      lang === null || !text.lines.length || text.lines.length > TEXT_HIGHLIGHT_LIMIT
+        ? Promise.resolve([])
+        : core()
+            .then(async (hl) => {
+              if (!hl.getLoadedLanguages().includes(lang)) await hl.loadLanguage(GRAMMARS[lang]);
+              return tokenizeLines(hl, lang, text.lines);
+            })
+            .catch(() => []);
+    textCache.set(text, tokens);
   }
   return tokens;
 }

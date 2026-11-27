@@ -468,6 +468,13 @@ html.w-rail { scroll-padding-top: 64px; }
 .dl.k-add .word { background: color-mix(in srgb, var(--add) 38%, transparent); border-radius: 2px; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--add) 70%, transparent); text-underline-offset: 3px; }
 .dl.k-del .word { background: color-mix(in srgb, var(--danger) 36%, transparent); border-radius: 2px; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent); }
 .dl.hunk .code, .dl.eof .code { padding-left: 4px; }
+.dl.expander { --row: color-mix(in srgb, var(--accent) 8%, var(--card)); }
+.dl.expander .gut { flex-direction: column; align-items: stretch; justify-content: center; padding-left: 0; }
+.dl.expander .code { align-self: center; }
+.dl .expand { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.dl.expander.two .expand { min-height: 16px; }
+.dl .expand svg { width: 16px; height: 16px; fill: currentColor; }
+.dl .expand:hover, .dl .expand:focus-visible { background: var(--accent); color: var(--accent-fg); }
 .annot { position: sticky; left: 0; width: 100cqw; display: flex; flex-direction: column; gap: 8px; padding: 8px 16px 10px calc(2 * var(--ln, 4ch) + 48px); background: var(--bg); border-block: 1px solid var(--line); font: 13px/1.5 var(--sans); }
 /* Findings, pending comments and composers under a line share one width and one left edge. */
 .annot > * { max-width: 760px; box-sizing: border-box; }

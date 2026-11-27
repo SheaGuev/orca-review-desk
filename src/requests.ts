@@ -90,6 +90,13 @@ function registerGuideData(orca: OrcaWorkerApi, api: WorkerApi): void {
     const guide = await api.requireGuide(key);
     return prData.fileDiff(guide, key, asked ?? guide.pr.commit, path);
   });
+  orca.panels.handle("file.lines", async ({ key, path, commit }) => {
+    if (typeof path !== "string" || !path || path.includes("\0"))
+      throw fail("invalid", "Expected a file path");
+    const asked = optionalCommit(commit);
+    const guide = await api.requireGuide(key);
+    return prData.fileLines(guide, key, asked ?? guide.pr.commit, path);
+  });
   orca.panels.handle("breakdown.get", async ({ key, commit }) => {
     const asked = optionalCommit(commit);
     const guide = await api.requireGuide(key);
@@ -249,7 +256,34 @@ function registerCommands(orca: OrcaWorkerApi, api: WorkerApi): void {
   });
 }
 
+/** A tab's memory past this size is refused rather than kept. */
+const TAB_MEMORY_LIMIT = 200_000;
+/** PRs whose tab memory is kept; the oldest goes first. */
+const TAB_MEMORY_PRS = 50;
+
+/**
+ * How a guide tab was left (scroll, files opened, lines shown), kept in the worker's memory only:
+ * Orca reloads a tab that was away, and this lets it come back the same. Gone when Orca restarts.
+ */
+function registerTabMemory(orca: OrcaWorkerApi): void {
+  const kept = new Map<string, unknown>();
+  orca.panels.handle("tab.get", ({ key }) => ({ memory: kept.get(key) ?? null }));
+  orca.panels.handle("tab.save", ({ key, memory }) => {
+    if (typeof key !== "string" || !key) throw fail("invalid", "Expected a PR key");
+    if (!isObj(memory) || JSON.stringify(memory).length > TAB_MEMORY_LIMIT)
+      throw fail("invalid", "Expected the tab's memory");
+    kept.delete(key);
+    kept.set(key, memory);
+    for (const old of kept.keys()) {
+      if (kept.size <= TAB_MEMORY_PRS) break;
+      kept.delete(old);
+    }
+    return { saved: true as const };
+  });
+}
+
 export function registerRequests(orca: OrcaWorkerApi, api: WorkerApi): void {
+  registerTabMemory(orca);
   registerQueue(orca, api);
   registerReview(orca, api);
   registerGuideData(orca, api);

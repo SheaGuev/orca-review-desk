@@ -345,3 +345,156 @@ function mergeShows(pieces: FocusPiece[]): FocusPiece[] {
   }
   return out;
 }
+
+/** The PR-head file's text as `file.lines` answers it, for drawing unchanged lines between hunks. */
+export type FileLines = {
+  /** The file's lines at the commit, without their newlines; empty for a binary or missing file. */
+  lines: string[];
+  /** The file was cut to fit the answer; `lines` is the start of it. */
+  truncated: boolean;
+};
+
+/** The answer for a file's text: split into lines and cut to the same limits as a diff. */
+export function fileLinesView(
+  text: string | null,
+  limits: { chars?: number; lines?: number } = {},
+): FileLines {
+  // A NUL byte is how git tells binary content apart; there is nothing to draw.
+  if (text === null || text.includes("\0")) return { lines: [], truncated: false };
+  const all = text.split("\n");
+  if (all[all.length - 1] === "") all.pop();
+  const lines = withinLimits(
+    all,
+    limits.lines ?? DIFF_LINE_LIMIT,
+    limits.chars ?? DIFF_ANSWER_LIMIT,
+  );
+  return { lines, truncated: lines.length < all.length };
+}
+
+/** Lines one press of an expand arrow shows, as on GitHub. */
+export const EXPAND_STEP = 20;
+
+/**
+ * Unchanged PR-head lines the diff leaves out: above a hunk (`at` is its header's row) or after
+ * the last hunk (`at` is `rows.length`, and `end` is null until the file's length is known).
+ */
+export type ContextGap = {
+  at: number;
+  start: number;
+  end: number | null;
+  /** A hidden line's base-side number is its PR-head number plus this. */
+  offset: number;
+};
+
+/** How much of a gap the reviewer opened: lines from its top (below the hunk before) and bottom. */
+export type Expansion = { top: number; bottom: number };
+
+const HUNK_COUNTS = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/** A hunk's first line on one side: git numbers an empty side by the line before it. */
+const firstLine = (start: string | undefined, count: string | undefined): number =>
+  Number(start) + (count === "0" ? 1 : 0);
+
+/** The gaps of a file's rows; a deleted file has none, an added one nothing after its last line. */
+export function contextGaps(rows: readonly DiffRow[], status: DiffFile["status"]): ContextGap[] {
+  if (status === "deleted") return [];
+  const gaps: ContextGap[] = [];
+  let nextNew = 1;
+  let nextOld = 1;
+  let hunks = 0;
+  // git's "no newline" marker after a PR-head line means the file ends with that line.
+  let headEnds = false;
+  rows.forEach((r, at) => {
+    if (r.kind === "eof") {
+      const before = rows[at - 1];
+      if (before?.kind === "add" || before?.kind === "ctx") headEnds = true;
+      return;
+    }
+    headEnds = false;
+    if (r.kind !== "hunk") {
+      if (r.new !== null) nextNew = r.new + 1;
+      if (r.old !== null) nextOld = r.old + 1;
+      return;
+    }
+    hunks++;
+    const m = HUNK_COUNTS.exec(r.text);
+    if (!m) return;
+    const newFirst = firstLine(m[3], m[4]);
+    const oldFirst = firstLine(m[1], m[2]);
+    if (newFirst > nextNew)
+      gaps.push({ at, start: nextNew, end: newFirst - 1, offset: oldFirst - newFirst });
+    nextNew = newFirst;
+    nextOld = oldFirst;
+  });
+  if (hunks && status !== "added" && !headEnds)
+    gaps.push({ at: rows.length, start: nextNew, end: null, offset: nextOld - nextNew });
+  return gaps;
+}
+
+/** The gap's last line, once the file's length (`total`) is known for the one after the last hunk. */
+const gapEnd = (g: ContextGap, total: number | null): number | null => g.end ?? total;
+
+/** Lines of the gap still hidden; null while that depends on a file length not loaded yet. */
+export function hiddenCount(g: ContextGap, e: Expansion, total: number | null): number | null {
+  const end = gapEnd(g, total);
+  return end === null ? null : Math.max(0, end - g.start + 1 - e.top - e.bottom);
+}
+
+/**
+ * The arrows a gap offers, as GitHub draws them: one to show everything when what is hidden fits a
+ * step, else up (above the next hunk) for the top of the file, down (below the hunk before) for the
+ * end, and both between hunks. Empty once the gap is open.
+ */
+export function expandControls(
+  g: ContextGap,
+  e: Expansion,
+  total: number | null,
+  rowCount: number,
+): ("up" | "down" | "all")[] {
+  const hidden = hiddenCount(g, e, total);
+  if (hidden === 0) return [];
+  if (hidden !== null && hidden <= EXPAND_STEP) return ["all"];
+  if (g.at === rowCount) return ["down"];
+  if (g.start === 1) return ["up"];
+  return ["down", "up"];
+}
+
+/** The expansion after a press; `total` is the file's line count, needed once the file is loaded. */
+export function expand(
+  g: ContextGap,
+  e: Expansion,
+  dir: "up" | "down" | "all",
+  total: number,
+): Expansion {
+  const hidden = hiddenCount(g, e, total) ?? 0;
+  if (dir === "all" || hidden <= EXPAND_STEP) return { top: e.top + hidden, bottom: e.bottom };
+  return dir === "down"
+    ? { top: e.top + EXPAND_STEP, bottom: e.bottom }
+    : { top: e.top, bottom: e.bottom + EXPAND_STEP };
+}
+
+/**
+ * The PR-head lines a gap shows now, as unchanged rows: those opened from its top, those opened
+ * from its bottom, and whether nothing is left hidden (its hunk header then goes, as on GitHub).
+ * Lines past the loaded text (`lines`, a truncated file) are left out.
+ */
+export function shownContext(
+  g: ContextGap,
+  e: Expansion,
+  lines: readonly string[],
+): { above: DiffRow[]; below: DiffRow[]; open: boolean } {
+  const end = Math.min(gapEnd(g, lines.length) ?? lines.length, lines.length);
+  const row = (n: number): DiffRow => ({
+    kind: "ctx",
+    old: n + g.offset,
+    new: n,
+    text: lines[n - 1] ?? "",
+  });
+  const topEnd = Math.min(end, g.start + e.top - 1);
+  const bottomStart = Math.max(topEnd + 1, end - e.bottom + 1);
+  const above: DiffRow[] = [];
+  const below: DiffRow[] = [];
+  for (let n = g.start; n <= topEnd; n++) above.push(row(n));
+  for (let n = bottomStart; n <= end; n++) below.push(row(n));
+  return { above, below, open: hiddenCount(g, e, lines.length) === 0 };
+}

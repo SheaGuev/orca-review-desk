@@ -1,7 +1,16 @@
 // Drawing a diff view from its state: the rows on screen, the notes under them (findings, pending
 // comments, open composers), and moving to a line. The state is one object, changed here and in
 // editor/diff-view.ts (loading, open and closed) and editor/diff-composers.ts (composers).
-import { rowOfLine, type DiffFile, type DiffRow, type FocusPiece } from "../src/diff-model";
+import {
+  expand,
+  rowOfLine,
+  type ContextGap,
+  type DiffFile,
+  type DiffRow,
+  type Expansion,
+  type FileLines,
+  type FocusPiece,
+} from "../src/diff-model";
 import { commentPlace } from "../src/review";
 import type { Finding, LineRange, PrGuide } from "../src/schema";
 import type { ComposerState } from "./composer";
@@ -16,7 +25,7 @@ import {
   type Note,
 } from "./diff-rows";
 import { h, splitPath } from "./dom";
-import type { RowTokens } from "./highlight";
+import { tokensForText, type RowTokens, type Tok } from "./highlight";
 import { linksImports } from "./imports";
 import { plural } from "./parts";
 import { cardOf, type Review } from "./review";
@@ -33,6 +42,19 @@ export type LineComposer = {
   error: string | null;
   el: HTMLElement;
 };
+
+/** What a diff view remembers of how the reviewer left a file, so a reopened tab draws it the same. */
+export type FileUi = {
+  open?: boolean;
+  full?: boolean;
+  /** Focus gaps opened, by their first row. */
+  revealed?: number[];
+  /** Unchanged lines opened between hunks, as [gap row, expansion]. */
+  expansions?: [number, Expansion][];
+};
+
+/** One file's remembered state in the tab, read when it is drawn and written on each change. */
+export type FileMemory = { get: () => FileUi | undefined; set: (patch: FileUi) => void };
 
 /** One diff view: what it was made with, its elements, and what it shows now. */
 export type View = {
@@ -66,7 +88,62 @@ export type View = {
   focusComment: string | null;
   /** Finding cards the reviewer opened or closed by hand, by finding and what became of it. */
   readonly findingOpen: Map<string, boolean>;
+  /** Loads the PR-head text of a file; without it, the lines between hunks stay hidden. */
+  readonly loadLines: ((path: string) => Promise<FileLines>) | null;
+  readonly memory: FileMemory | null;
+  /** Unchanged lines the diff leaves out, by the row each sits above. */
+  gaps: Map<number, ContextGap>;
+  expansions: Map<number, Expansion>;
+  /** The file's PR-head text once an expand arrow needed it, and its colours. */
+  text: FileLines | null;
+  textToks: readonly (readonly Tok[])[];
 };
+
+/** Writes what the reviewer opened in the file shown to the tab's memory. */
+export function remember(v: View): void {
+  v.memory?.set({
+    full: v.full,
+    revealed: [...v.revealed],
+    expansions: [...v.expansions],
+  });
+}
+
+/** The PR-head text of the file shown, loaded once; null when it can't be had. */
+export async function textOf(v: View): Promise<FileLines | null> {
+  if (v.text) return v.text;
+  const path = v.current;
+  if (!v.loadLines || path === null) return null;
+  const text = await v.loadLines(path).catch(() => null);
+  if (!text || v.current !== path) return null;
+  const toks = await tokensForText(path, text);
+  if (v.current !== path) return null;
+  v.text = text;
+  v.textToks = toks;
+  return text;
+}
+
+/** One press of a gap's arrow: loads the file's text if need be, then shows more of the gap. */
+export async function expandGap(v: View, at: number, dir: "up" | "down" | "all"): Promise<void> {
+  const gap = v.gaps.get(at);
+  if (!gap) return;
+  const text = await textOf(v);
+  if (!text) {
+    v.frame.announce.textContent = "Couldn’t load the file’s other lines";
+    return;
+  }
+  const before = v.expansions.get(at) ?? { top: 0, bottom: 0 };
+  v.expansions.set(at, expand(gap, before, dir, text.lines.length));
+  drawBody(v);
+  drawNotes(v);
+  remember(v);
+  // Focus stays on the gap's arrows while any are left, as on GitHub.
+  const again = v.frame.lines.querySelector<HTMLButtonElement>(
+    `button.expand[data-at="${at}"][data-dir="${dir}"]`,
+  );
+  const any = v.frame.lines.querySelector<HTMLButtonElement>(`button.expand[data-at="${at}"]`);
+  (again ?? any ?? v.frame.scroller).focus({ preventScroll: true });
+  v.frame.announce.textContent = "Lines shown";
+}
 
 /** The "+" of PR-head line `line`, when that line is drawn and takes a comment. */
 export const plusOf = (v: View, line: number): HTMLButtonElement | null =>
@@ -90,6 +167,12 @@ export function drawBody(v: View): void {
     // Whether GitHub takes a comment on that PR-head line of the file shown.
     (line) => v.review !== null && v.current !== null && v.review.canComment(v.current, line),
     v.linkImports && v.current !== null && linksImports(v.current),
+    {
+      gaps: v.gaps,
+      expansions: v.expansions,
+      lines: v.text?.lines ?? null,
+      toks: v.textToks,
+    },
   );
   v.rowEl = drawn.rowEl;
   for (const [line, row] of drawn.rowEl)
@@ -119,6 +202,7 @@ export function setFull(v: View, on: boolean, line: number | null = null): void 
   if (v.full && line !== null) v.limit = Math.max(v.limit, rowOfLine(v.rows, line) + 1);
   drawBody(v);
   drawNotes(v);
+  remember(v);
   v.frame.announce.textContent = v.full
     ? "Showing the whole file"
     : "Showing the stop’s lines only";
@@ -282,6 +366,7 @@ function reveal(v: View, line: number): void {
   v.revealed.add(gap.from);
   drawBody(v);
   drawNotes(v);
+  remember(v);
 }
 
 /** Puts focus on the pending comment the review bar asked for, once it is drawn. */

@@ -6,7 +6,7 @@ import { FINISH } from "./parts";
 import type { Breakdown } from "../src/breakdown/assemble";
 import { promiseCache } from "../src/cache";
 import { fullTour } from "../src/coverage";
-import type { DiffFile } from "../src/diff-model";
+import type { DiffFile, FileLines } from "../src/diff-model";
 import { message } from "../src/errors";
 import { stopForComment } from "../src/pending";
 import { prKey } from "../src/repo";
@@ -36,6 +36,7 @@ import { startReview, type Review } from "./review";
 import { codeThemeButton } from "./code-theme";
 import { fitRail } from "./rail-layout";
 import { STYLE } from "./style";
+import { loadTabMemory, restoreScroll, type TabMemory } from "./tab-memory";
 import { draw, type FocusTarget, type LineTarget, type TourContext } from "./tour";
 import { createViewed } from "./viewed";
 
@@ -153,6 +154,7 @@ function workerLinks(guide: PrGuide, say: (text: string) => void) {
   const { commit } = guide.pr;
   /** Asked of the worker once each; a failed answer is asked for again. */
   const diffs = promiseCache<DiffFile>();
+  const texts = promiseCache<FileLines>();
   const changes = promiseCache<Breakdown>();
   const viewed = createViewed({
     load: async () => (await orca.plugin.request("viewed.get", { key })).viewed,
@@ -164,6 +166,10 @@ function workerLinks(guide: PrGuide, say: (text: string) => void) {
     load: (path: string) =>
       diffs.get(path, () =>
         orca.plugin.request("diff.get", { key, path, commit }, { timeoutMs: 120_000 }),
+      ),
+    loadLines: (path: string) =>
+      texts.get(path, () =>
+        orca.plugin.request("file.lines", { key, path, commit }, { timeoutMs: 120_000 }),
       ),
     breakdown: () =>
       changes.get("", () =>
@@ -246,6 +252,9 @@ type Running = {
   readonly links: ReturnType<typeof workerLinks>;
   state: TourState;
   review: Review | null;
+  readonly memory: TabMemory;
+  /** Whether the page is still being scrolled back to where the tab was left. */
+  restoring: () => boolean;
   /** Undone before each redraw: diff views, document listeners. */
   cleanups: (() => void)[];
 };
@@ -298,6 +307,7 @@ function contextOf(t: Running, target: LineTarget | null): TourContext {
     ...t.links,
     notice: t.notice,
     track: (dispose) => t.cleanups.push(dispose),
+    remember: (path) => t.memory.file(t.state.view, path),
   };
 }
 
@@ -333,7 +343,35 @@ function bindReview(t: Running, r: Review): void {
   render(t);
 }
 
-function startTour(guide: PrGuide, older: boolean, initial: TourState, data: TourData): Tour {
+/**
+ * Scrolls back to where the reviewer was in this view when the tab was last drawn, then keeps
+ * their scroll position in the tab's memory. Returns the cleanup.
+ */
+function watchScroll(t: Running): () => void {
+  const left = t.memory.scrollFor(t.state.view);
+  if (left !== null && left > 0) t.restoring = restoreScroll(root, left);
+  const onScroll = () => {
+    if (!t.restoring()) t.memory.setScroll(t.state.view, Math.round(window.scrollY));
+  };
+  const onHide = () => t.memory.flush();
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("pagehide", onHide);
+  document.addEventListener("visibilitychange", onHide);
+  return () => {
+    window.removeEventListener("scroll", onScroll);
+    window.removeEventListener("pagehide", onHide);
+    document.removeEventListener("visibilitychange", onHide);
+    t.memory.flush();
+  };
+}
+
+function startTour(
+  guide: PrGuide,
+  older: boolean,
+  initial: TourState,
+  data: TourData,
+  memory: TabMemory,
+): Tour {
   const notice = h("p", { class: "notice", role: "status" });
   const t: Running = {
     key: prKey(guide.pr.repo, guide.pr.number),
@@ -345,8 +383,11 @@ function startTour(guide: PrGuide, older: boolean, initial: TourState, data: Tou
     links: workerLinks(guide, (text) => (notice.textContent = text)),
     state: initial,
     review: null,
+    memory,
+    restoring: () => false,
     cleanups: [],
   };
+  const unwatch = watchScroll(t);
   const onKey = (e: KeyboardEvent): void => {
     const to = keyTarget(e, t.state.view, t.count);
     if (to === null) return;
@@ -359,6 +400,7 @@ function startTour(guide: PrGuide, older: boolean, initial: TourState, data: Tou
     setReview: (r) => bindReview(t, r),
     dispose: () => {
       document.removeEventListener("keydown", onKey);
+      unwatch();
       cleanUp(t);
     },
   };
@@ -367,8 +409,12 @@ function startTour(guide: PrGuide, older: boolean, initial: TourState, data: Tou
 /** Each show() supersedes the last, so a slow request never draws over a newer file. */
 let shown = 0;
 let current: Tour | null = null;
+let shownText: string | null = null;
 
 async function show(text: string): Promise<void> {
+  // The same document again (Orca sends it when the tab comes back) changes nothing on screen.
+  if (current && text === shownText) return;
+  shownText = text;
   const run = ++shown;
   let value: unknown;
   try {
@@ -402,12 +448,15 @@ async function show(text: string): Promise<void> {
   const data = tourData(guide, skipped);
   const stops = stopCount({ stops: data.stops, skipped: skipped.map((f) => f.path) });
   // Where the reviewer left off on this commit; a new commit (or no worker answer) starts over.
-  const state = await orca.plugin
-    .request("tour.get", { key, commit: guide.pr.commit, stops })
-    .catch(() => freshTour(guide.pr.commit));
+  const [state, memory] = await Promise.all([
+    orca.plugin
+      .request("tour.get", { key, commit: guide.pr.commit, stops })
+      .catch(() => freshTour(guide.pr.commit)),
+    loadTabMemory(key),
+  ]);
   if (run !== shown) return;
   current?.dispose();
-  const tour = startTour(guide, older, state, data);
+  const tour = startTour(guide, older, state, data, memory);
   current = tour;
   tour.draw();
   // Review controls need the worker's draft; a v1 guide has no comment lines to check against.

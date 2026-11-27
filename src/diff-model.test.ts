@@ -2,8 +2,13 @@ import { assert, test } from "orca/testing";
 import { nth } from "./fixtures";
 import { splitDiff } from "./diff";
 import {
+  contextGaps,
   diffRows,
+  expand,
+  expandControls,
   fileDiffView,
+  fileLinesView,
+  shownContext,
   focusPieces,
   gutterDigits,
   rowOfLine,
@@ -268,4 +273,52 @@ test("a changed line pair marks only the words that changed", () => {
 test("lines with nothing in common, or with no partner, get no word marks", () => {
   const rows = diffRows(["@@ -1,2 +1,3 @@", "-alpha beta", "+gamma delta", "+extra line"]);
   assert.equal(wordChanges(rows).size, 0);
+});
+
+test("gaps sit above each hunk and after the last, numbered on both sides", () => {
+  const rows = diffRows(fileDiffView(file("src/a.ts"), "src/a.ts", "abc").lines);
+  // The second hunk's file ends with no newline, so nothing follows it.
+  assert.deepEqual(contextGaps(rows, "modified"), [{ at: 7, start: 6, end: 20, offset: -1 }]);
+  const open = diffRows(["@@ -5,2 +5,3 @@", " a", "+b", " c"]);
+  assert.deepEqual(contextGaps(open, "modified"), [
+    { at: 0, start: 1, end: 4, offset: 0 },
+    { at: 4, start: 8, end: null, offset: -1 },
+  ]);
+  assert.deepEqual(contextGaps(open, "added"), [{ at: 0, start: 1, end: 4, offset: 0 }]);
+  assert.deepEqual(contextGaps(open, "deleted"), []);
+});
+
+test("expand arrows step 20 lines at a time from either side, as on GitHub", () => {
+  const between = { at: 9, start: 30, end: 79, offset: 2 };
+  const none = { top: 0, bottom: 0 };
+  assert.deepEqual(expandControls(between, none, null, 20), ["down", "up"]);
+  const down = expand(between, none, "down", 200);
+  assert.deepEqual(down, { top: 20, bottom: 0 });
+  const both = expand(between, down, "up", 200);
+  assert.deepEqual(both, { top: 20, bottom: 20 });
+  // 10 left: one press shows them all.
+  assert.deepEqual(expandControls(between, both, null, 20), ["all"]);
+  const all = expand(between, both, "up", 200);
+  assert.deepEqual(expandControls(between, all, null, 20), []);
+  const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`);
+  const shown = shownContext(between, both, lines);
+  assert.equal(shown.above.length, 20);
+  assert.deepEqual(shown.above[0], { kind: "ctx", old: 32, new: 30, text: "line 30" });
+  assert.deepEqual(shown.below.at(-1), { kind: "ctx", old: 81, new: 79, text: "line 79" });
+  assert.ok(!shown.open);
+  assert.ok(shownContext(between, all, lines).open);
+  // The top of the file only goes up; the end only down, its length unknown until loaded.
+  assert.deepEqual(expandControls({ at: 0, start: 1, end: 40, offset: 0 }, none, null, 9), ["up"]);
+  const end = { at: 9, start: 50, end: null, offset: 0 };
+  assert.deepEqual(expandControls(end, none, null, 9), ["down"]);
+  assert.deepEqual(expandControls(end, none, 55, 9), ["all"]);
+  assert.deepEqual(expandControls(end, none, 49, 9), []);
+});
+
+test("a file's text comes back as lines, cut to the limits, empty when binary", () => {
+  assert.deepEqual(fileLinesView("a\nb\n"), { lines: ["a", "b"], truncated: false });
+  assert.deepEqual(fileLinesView("a\nb"), { lines: ["a", "b"], truncated: false });
+  assert.deepEqual(fileLinesView("a\u0000b"), { lines: [], truncated: false });
+  assert.deepEqual(fileLinesView(null), { lines: [], truncated: false });
+  assert.deepEqual(fileLinesView("a\nb\nc", { lines: 2 }), { lines: ["a", "b"], truncated: true });
 });

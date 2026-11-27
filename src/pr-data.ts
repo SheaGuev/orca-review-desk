@@ -23,7 +23,7 @@ import {
 } from "./breakdown/parse";
 import { promiseCache, type PromiseCache } from "./cache";
 import { splitDiff } from "./diff";
-import { fileDiffView, type DiffFile } from "./diff-model";
+import { fileDiffView, fileLinesView, type DiffFile, type FileLines } from "./diff-model";
 import { fail, message } from "./errors";
 import { run, runOk } from "./exec";
 import { fetchPr, hasCommit, prRefs, type Clone } from "./git";
@@ -60,6 +60,8 @@ type Ctx = {
   /** The local clone of the guide's repository, or null when Orca has none. */
   cloneOf: (key: string, repo: string) => Promise<Clone | null>;
   diffs: PromiseCache<DiffFile>;
+  /** PR-head file texts the guide tab asked for, to draw unchanged lines between hunks. */
+  texts: PromiseCache<FileLines>;
   /** `--name-status -M` of a range: renames for diffs, status letters for Changes. */
   statuses: PromiseCache<NameStatus[]>;
   changed: PromiseCache<ChangedFiles>;
@@ -272,6 +274,19 @@ async function computeFileDiff(
   return fileDiffView(file, path, commit);
 }
 
+/** `path` at `commit`, as lines; a path the commit doesn't have comes back empty. */
+async function computeFileLines(
+  c: Ctx,
+  guide: StoredGuide,
+  at: { key: string; commit: string; path: string },
+): Promise<FileLines> {
+  const { at: place } = await placeAt(c, guide, at.key, at.commit);
+  const out = await run("git", ["-C", place.cwd, "cat-file", "blob", `${at.commit}:${at.path}`], {
+    timeoutMs: 60_000,
+  });
+  return fileLinesView(out.code === 0 ? out.stdout : null);
+}
+
 async function computeBreakdown(
   c: Ctx,
   guide: StoredGuide,
@@ -293,6 +308,8 @@ export type PrData = {
   triage: (at: PrPlace, commit: string, baseRef: string) => Promise<Triage>;
   /** One file's diff at `commit`, for the guide tab's diff pane. */
   fileDiff: (guide: StoredGuide, key: string, commit: string, path: string) => Promise<DiffFile>;
+  /** One file's text at `commit`, for the unchanged lines a diff leaves out. */
+  fileLines: (guide: StoredGuide, key: string, commit: string, path: string) => Promise<FileLines>;
   /** The PR's changed files grouped by kind, as Diff Breakdown groups a branch. */
   breakdown: (guide: StoredGuide, key: string, commit: string) => Promise<Breakdown>;
   /** The guide's skipped files at `commit`: stored with it when it is that commit's, else from git. */
@@ -308,6 +325,7 @@ export function createPrData(deps: Pick<Ctx, "log" | "cloneOf">): PrData {
   const c: Ctx = {
     ...deps,
     diffs: promiseCache(DIFF_CACHE_LIMIT),
+    texts: promiseCache(DIFF_CACHE_LIMIT),
     statuses: promiseCache(PR_CACHE_LIMIT),
     changed: promiseCache(PR_CACHE_LIMIT),
     breakdowns: promiseCache(PR_CACHE_LIMIT),
@@ -321,6 +339,10 @@ export function createPrData(deps: Pick<Ctx, "log" | "cloneOf">): PrData {
     fileDiff: (guide, key, commit, path) =>
       c.diffs.get(`${key}@${commit}:${path}`, () =>
         computeFileDiff(c, guide, { key, commit, path }),
+      ),
+    fileLines: (guide, key, commit, path) =>
+      c.texts.get(`${key}@${commit}:${path}`, () =>
+        computeFileLines(c, guide, { key, commit, path }),
       ),
     breakdown: (guide, key, commit) =>
       c.breakdowns.get(`${key}@${commit}`, () => computeBreakdown(c, guide, key, commit)),

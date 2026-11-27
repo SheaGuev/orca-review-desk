@@ -1,6 +1,14 @@
 // Opening a comment composer in a diff view: under a line ("+"), over a range of lines
 // (Shift+"+" on a second line), or for the whole file.
-import { drawBody, drawNotes, plusOf, type LineComposer, type View } from "./diff-draw";
+import {
+  drawBody,
+  drawNotes,
+  expandGap,
+  plusOf,
+  remember,
+  type LineComposer,
+  type View,
+} from "./diff-draw";
 import { cardOf } from "./review";
 
 /** The composer a press on `line` leads to: a new one there, or the open one stretched to it. */
@@ -81,6 +89,7 @@ function openGap(v: View, from: number): void {
   v.revealed.add(from);
   drawBody(v);
   drawNotes(v);
+  remember(v);
   v.frame.scroller.focus();
   v.frame.announce.textContent = "Lines shown";
 }
@@ -97,6 +106,13 @@ export function wireRows(v: View): void {
   const { lines } = v.frame;
   lines.addEventListener("click", (e) => {
     if (!(e.target instanceof Element)) return;
+    const arrow = e.target.closest<HTMLElement>("button.expand");
+    if (arrow) {
+      const dir = arrow.dataset.dir;
+      if (dir === "up" || dir === "down" || dir === "all")
+        void expandGap(v, Number(arrow.dataset.at), dir);
+      return;
+    }
     const gap = e.target.closest("button.gap");
     if (gap) {
       openGap(v, Number(gap.getAttribute("data-from")));

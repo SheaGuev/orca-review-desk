@@ -1,6 +1,6 @@
 // The panel <-> worker contract. src/panel.tsx, src/worker.ts and editor/main.ts all read it.
 import type { Breakdown } from "./breakdown/assemble";
-import type { DiffFile } from "./diff-model";
+import type { DiffFile, FileLines } from "./diff-model";
 import type { ImportTarget } from "./import-resolve";
 import type { Draft, DraftComment, PostedComment, ReviewEvent } from "./review";
 import type { RiskLevel, SkippedFile } from "./schema";
@@ -165,6 +165,11 @@ declare module "orca" {
      */
     "diff.get": { input: { key: string; path: string; commit?: string }; output: DiffFile };
     /**
+     * One file's PR-head text at the guide's commit (default: the stored guide's), for the
+     * unchanged lines between hunks. Capped like a diff; `truncated` says when it was cut.
+     */
+    "file.lines": { input: { key: string; path: string; commit?: string }; output: FileLines };
+    /**
      * The PR's changed files grouped by kind, as Diff Breakdown groups a branch, at the guide's
      * commit (default: the stored guide's). Lockfiles included. Computed from the local clone.
      */
@@ -181,6 +186,9 @@ declare module "orca" {
      */
     "tour.get": { input: { key: string; commit?: string; stops: number }; output: TourState };
     "tour.save": { input: { key: string; state: TourState }; output: { saved: true } };
+    /** How the guide tab was left (scroll, files opened, lines shown), from the worker's memory. */
+    "tab.get": { input: { key: string }; output: { memory: unknown } };
+    "tab.save": { input: { key: string; memory: object }; output: { saved: true } };
     /** The PR's files you ticked Viewed on GitHub (not those viewed before they changed again). */
     "viewed.get": { input: { key: string }; output: { viewed: string[] } };
     /** Ticks or unticks Viewed on one file on GitHub; only ever called from a press in the guide tab. */
